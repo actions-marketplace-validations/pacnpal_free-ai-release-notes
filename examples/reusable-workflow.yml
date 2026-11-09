@@ -1,0 +1,20 @@
+# The same as release-on-tag.yml, as a reusable workflow: one job, no checkout
+# step, and the key passed as a secret instead of an input.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@v1
+    with:
+      create-release: true
+      tag-pattern: 'v*'
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

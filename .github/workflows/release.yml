@@ -1,20 +1,35 @@
-# This repository releases itself with its own reusable workflow.
+# This repository releases itself with its own action, then moves the major version
+# tag (v1, v2, ...) to the new release so `uses: pacnpal/free-ai-release-notes@v1` follows it.
 # Requires the OPENROUTER_API_KEY repository secret.
 name: Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
 
 permissions:
   contents: write
 
 jobs:
   release:
-    uses: ./.github/workflows/generate-release-notes.yml
-    with:
-      create-release: true
-      tag-pattern: 'v*'
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: ./
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          create-release: true
+          tag-pattern: 'v*.*.*' # not the moving v1 tag
+
+      - name: Move the major version tag
+        if: ${{ !contains(github.ref_name, '-') }} # not for prereleases such as v1.2.0-rc.1
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          major="${TAG%%.*}"
+          git tag -f "$major" "$TAG^{commit}"
+          git push -f origin "refs/tags/$major"

@@ -15,11 +15,16 @@ permissions:
 
 jobs:
   release:
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
-    with:
-      create-release: true
-      tag-pattern: 'v*'
-      # Optional: use your own model (default: openrouter/free), with the free router as a fallback.
-      # model: anthropic/claude-sonnet-4.5, openrouter/free
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the action needs the history since the previous tag
+
+      - uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          create-release: true
+          tag-pattern: 'v*'
+          # Optional: use your own model (default: openrouter/free), with the free router as a fallback.
+          # model: anthropic/claude-sonnet-4.5, openrouter/free

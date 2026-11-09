@@ -1,4 +1,4 @@
-# Only generate the title and notes, then use them in your own release job
+# Only generate the title and notes, then use them in your own release step
 # (here: build artifacts and upload them with the GitHub CLI).
 name: Build and release
 
@@ -11,25 +11,25 @@ permissions:
   contents: write
 
 jobs:
-  notes:
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
-    with:
-      instructions: Write for end users, not developers. Mention upgrade steps if any.
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-
   release:
-    needs: notes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: notes
+        uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          instructions: Write for end users, not developers. Mention upgrade steps if any.
+
       - run: make dist # your build
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.notes.outputs.tag }}
-          TITLE: ${{ needs.notes.outputs.title }}
-          NOTES: ${{ needs.notes.outputs.notes }}
-        run: |
-          printf '%s\n' "$NOTES" > notes.md
-          gh release create "$TAG" dist/* --title "$TITLE" --notes-file notes.md
+          TAG: ${{ steps.notes.outputs.tag }}
+          TITLE: ${{ steps.notes.outputs.title }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes-file }}
+        run: gh release create "$TAG" dist/* --title "$TITLE" --notes-file "$NOTES_FILE"

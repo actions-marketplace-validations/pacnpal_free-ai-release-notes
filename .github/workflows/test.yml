@@ -1,0 +1,78 @@
+# Runs the action, and the reusable workflow that wraps it, against this repository on every
+# change: notes for the unreleased commits since the last tag, without creating a release.
+# Needs the OPENROUTER_API_KEY secret, so it is skipped for pull requests from forks.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  action:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        # Full checkout, and the default shallow one the action has to deepen itself.
+        fetch-depth: [0, 1]
+    name: action (fetch-depth ${{ matrix.fetch-depth }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ matrix.fetch-depth }}
+
+      - id: notes
+        uses: ./
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          tag: v0.0.0-test
+          tag-pattern: 'v*.*.*'
+          use-github-notes: false
+
+      - name: Check outputs
+        env:
+          TITLE: ${{ steps.notes.outputs.title }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes-file }}
+          TAG: ${{ steps.notes.outputs.tag }}
+          AI: ${{ steps.notes.outputs.ai-generated }}
+          MODEL: ${{ steps.notes.outputs.model }}
+        run: |
+          test "$TAG" = v0.0.0-test
+          test -n "$TITLE"
+          test -n "$NOTES"
+          test -s "$NOTES_FILE"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          echo "ai-generated=$AI model=$MODEL"
+          if [ "$AI" != true ]; then
+            echo "::warning::AI generation failed and the fallback notes were used; see the warnings above."
+          fi
+
+  reusable-workflow:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/generate-release-notes.yml
+    with:
+      tag: v0.0.0-test
+      tag-pattern: 'v*.*.*'
+      use-github-notes: false
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  reusable-workflow-outputs:
+    needs: reusable-workflow
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TITLE: ${{ needs.reusable-workflow.outputs.title }}
+          NOTES: ${{ needs.reusable-workflow.outputs.notes }}
+          TAG: ${{ needs.reusable-workflow.outputs.tag }}
+        run: |
+          test "$TAG" = v0.0.0-test
+          test -n "$TITLE"
+          test -n "$NOTES"

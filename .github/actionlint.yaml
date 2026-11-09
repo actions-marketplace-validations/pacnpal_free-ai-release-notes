@@ -1,0 +1,6 @@
+paths:
+  .github/workflows/generate-release-notes.yml:
+    ignore:
+      # Documented job context properties that actionlint doesn't know yet
+      # (https://github.com/rhysd/actionlint/issues/757).
+      - 'property "workflow_(repository|sha)" is not defined in object type'

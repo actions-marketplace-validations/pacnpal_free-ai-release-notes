@@ -1,0 +1,163 @@
+name: Free AI Release Notes
+description: Write release titles and notes from your git history with AI, for free, using OpenRouter's free models router.
+author: pacnpal
+
+branding:
+  icon: file-text
+  color: purple
+
+inputs:
+  openrouter-api-key:
+    description: OpenRouter API key (https://openrouter.ai/keys). Store it as a repository secret and pass `secrets.OPENROUTER_API_KEY`.
+    required: true
+  tag:
+    description: Tag to generate notes for. Defaults to the triggering tag (github.ref_name) when the workflow runs on a tag.
+    default: ''
+  previous-tag:
+    description: Tag to diff against. Defaults to the closest earlier tag reachable from the release commit.
+    default: ''
+  target:
+    description: Commit-ish to release when the tag does not exist yet. Defaults to the triggering commit (github.sha).
+    default: ''
+  tag-pattern:
+    description: Glob used to pick the previous tag automatically (passed to `git describe --match`), e.g. `v*`.
+    default: ''
+  model:
+    description: "OpenRouter model ID to use, e.g. `anthropic/claude-sonnet-4.5`. List several, separated by commas or new lines, to fall back in order, e.g. `anthropic/claude-sonnet-4.5, openrouter/free`. Empty means `openrouter/free`."
+    default: openrouter/free
+  instructions:
+    description: Extra instructions appended to the prompt (tone, audience, sections to emphasise, ...).
+    default: ''
+  title-template:
+    description: Release title template. `{tag}` is replaced with the tag and `{title}` with the AI-generated title.
+    default: '{tag}: {title}'
+  max-commits:
+    description: Maximum number of commits sent to the model.
+    default: '200'
+  max-input-chars:
+    description: Maximum size of the git context sent to the model, in characters.
+    default: '60000'
+  temperature:
+    description: Sampling temperature.
+    default: '0.3'
+  max-tokens:
+    description: Maximum tokens in the model response.
+    default: '4096'
+  retries:
+    description: Number of attempts against OpenRouter before giving up (free models are rate limited and vary in quality).
+    default: '3'
+  use-github-notes:
+    description: "Also send GitHub's auto-generated notes (merged PRs, new contributors) to the model as context. Needs `contents: write`; skipped silently otherwise."
+    default: 'true'
+  append-changelog-link:
+    description: Append a "Full Changelog" compare link to the notes.
+    default: 'true'
+  fail-on-error:
+    description: Fail the step if the AI notes cannot be generated. When false, falls back to GitHub's notes (or a plain commit list) and the tag as title.
+    default: 'false'
+  create-release:
+    description: "Create the GitHub release (or update it if it already exists) with the generated title and notes. Needs `contents: write`."
+    default: 'false'
+  draft:
+    description: Create the release as a draft (only when a new release is created).
+    default: 'false'
+  prerelease:
+    description: Mark the release as a prerelease (only when a new release is created).
+    default: 'false'
+  api-base-url:
+    description: OpenRouter API base URL.
+    default: https://openrouter.ai/api/v1
+  github-token:
+    description: Token used for GitHub's generated notes and for creating the release.
+    default: ${{ github.token }}
+
+outputs:
+  title:
+    description: Release title.
+    value: ${{ steps.generate.outputs.title }}
+  notes:
+    description: Release notes (Markdown).
+    value: ${{ steps.generate.outputs.notes }}
+  notes-file:
+    description: Path to a file containing the release notes.
+    value: ${{ steps.generate.outputs.notes-file }}
+  tag:
+    description: Tag the notes were generated for.
+    value: ${{ steps.generate.outputs.tag }}
+  previous-tag:
+    description: Tag the changes were compared against (empty if none).
+    value: ${{ steps.generate.outputs.previous-tag }}
+  model:
+    description: Model OpenRouter actually used (empty if the fallback was used).
+    value: ${{ steps.generate.outputs.model }}
+  ai-generated:
+    description: "'true' if the notes came from the model, 'false' if the fallback was used."
+    value: ${{ steps.generate.outputs.ai-generated }}
+  release-url:
+    description: URL of the created or updated release (only when create-release is true).
+    value: ${{ steps.release.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Require OpenRouter API key
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+      run: |
+        if [ -z "$OPENROUTER_API_KEY" ]; then
+          echo "::error title=OpenRouter API key is not set::Add an OPENROUTER_API_KEY secret to this repository (Settings > Secrets and variables > Actions) and pass secrets.OPENROUTER_API_KEY to the 'openrouter-api-key' input. Get a key at https://openrouter.ai/keys"
+          exit 1
+        fi
+
+    - name: Generate title and notes
+      id: generate
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        IN_TAG: ${{ inputs.tag }}
+        IN_PREVIOUS_TAG: ${{ inputs.previous-tag }}
+        IN_TARGET: ${{ inputs.target }}
+        IN_TAG_PATTERN: ${{ inputs.tag-pattern }}
+        IN_MODEL: ${{ inputs.model }}
+        IN_INSTRUCTIONS: ${{ inputs.instructions }}
+        IN_TITLE_TEMPLATE: ${{ inputs.title-template }}
+        IN_MAX_COMMITS: ${{ inputs.max-commits }}
+        IN_MAX_INPUT_CHARS: ${{ inputs.max-input-chars }}
+        IN_TEMPERATURE: ${{ inputs.temperature }}
+        IN_MAX_TOKENS: ${{ inputs.max-tokens }}
+        IN_RETRIES: ${{ inputs.retries }}
+        IN_USE_GITHUB_NOTES: ${{ inputs.use-github-notes }}
+        IN_APPEND_CHANGELOG_LINK: ${{ inputs.append-changelog-link }}
+        IN_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        IN_API_BASE_URL: ${{ inputs.api-base-url }}
+      run: python3 "$GITHUB_ACTION_PATH/src/generate_notes.py"
+
+    - name: Create or update release
+      id: release
+      if: inputs.create-release == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        TAG: ${{ steps.generate.outputs.tag }}
+        TITLE: ${{ steps.generate.outputs.title }}
+        NOTES_FILE: ${{ steps.generate.outputs.notes-file }}
+        HEAD_SHA: ${{ steps.generate.outputs.head-sha }}
+        DRAFT: ${{ inputs.draft }}
+        PRERELEASE: ${{ inputs.prerelease }}
+      run: |
+        if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+          echo "Updating existing release $TAG"
+          gh release edit "$TAG" --repo "$REPO" --title "$TITLE" --notes-file "$NOTES_FILE"
+        else
+          echo "Creating release $TAG"
+          args=(--repo "$REPO" --title "$TITLE" --notes-file "$NOTES_FILE" --target "$HEAD_SHA")
+          if [ "$DRAFT" = "true" ]; then args+=(--draft); fi
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          gh release create "$TAG" "${args[@]}"
+        fi
+        url="$(gh release view "$TAG" --repo "$REPO" --json url --jq .url)"
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+        echo "Release: $url" >> "$GITHUB_STEP_SUMMARY"
