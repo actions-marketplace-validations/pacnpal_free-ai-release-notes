@@ -409,10 +409,11 @@ For private or internal repositories, this repository must be accessible to the 
 - [`action.yml`](action.yml) is the action. It runs [`src/generate_notes.py`](src/generate_notes.py), which holds all the logic, then creates or updates the release with `gh`.
 - [`.github/workflows/generate-release-notes.yml`](.github/workflows/generate-release-notes.yml) is the reusable workflow: it checks out the caller's repository and this one (at the commit it was called at) and runs the action.
 - [`.github/workflows/test.yml`](.github/workflows/test.yml) runs the action, from both a full and a shallow checkout, and the reusable workflow against this repository on every push and pull request, without creating a release (needs the `OPENROUTER_API_KEY` secret here).
-- [`.github/workflows/release.yml`](.github/workflows/release.yml) releases this repository with its own action on every `vX.Y.Z` tag and moves the major tag (`v1`) to it.
+- [`.github/workflows/release.yml`](.github/workflows/release.yml) releases this repository with its own action and moves the major tag (`v1`) to the newest release.
+- [`AGENTS.md`](AGENTS.md) (imported by `CLAUDE.md`) tells coding agents how to work here, including that they release only when asked.
 - [`.github/workflows/lint.yml`](.github/workflows/lint.yml) runs [actionlint](https://github.com/rhysd/actionlint) over the workflows and examples.
 
-To release: push a `vX.Y.Z` tag. To show a release on the GitHub Marketplace, edit it on GitHub and tick **Publish this Action to the GitHub Marketplace** (the first time, you'll be asked to accept the Marketplace Developer Agreement and pick a category).
+To release, either push a `vX.Y.Z` tag, or run the Release workflow by hand on `main` (**Actions → Release → Run workflow**, or `gh workflow run release.yml --ref main -f version=vX.Y.Z`), which creates the tag for you. Running it for a version that already exists regenerates that release's title and notes without moving its tag. To show a release on the GitHub Marketplace, edit it on GitHub and tick **Publish this Action to the GitHub Marketplace** (the first time, you'll be asked to accept the Marketplace Developer Agreement and pick a category).
 
 ## License
 

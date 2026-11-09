@@ -1,12 +1,23 @@
 # This repository releases itself with its own action, then moves the major version
 # tag (v1, v2, ...) to the new release so `uses: pacnpal/free-ai-release-notes@v1` follows it.
 # Requires the OPENROUTER_API_KEY repository secret.
+#
+# Two ways to run it:
+# - push a vX.Y.Z tag;
+# - run it by hand (Actions > Release > Run workflow, or `gh workflow run release.yml -f version=vX.Y.Z`)
+#   on main. A new version is tagged on main's latest commit; an existing one keeps its tag and
+#   gets its title and notes regenerated.
 name: Release
 
 on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. v1.2.0. An existing version gets its title and notes regenerated.
+        required: true
 
 permissions:
   contents: write
@@ -14,7 +25,23 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.version || github.ref_name }}
     steps:
+      - name: Check the version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Run releases from main, not $REF."
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::The version must look like v1.2.0 or v1.2.0-rc.1."
+            exit 1
+          fi
+
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -22,14 +49,21 @@ jobs:
       - uses: ./
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          tag: ${{ env.TAG }}
           create-release: true
           tag-pattern: 'v*.*.*' # not the moving v1 tag
 
       - name: Move the major version tag
-        if: ${{ !contains(github.ref_name, '-') }} # not for prereleases such as v1.2.0-rc.1
-        env:
-          TAG: ${{ github.ref_name }}
+        if: ${{ !contains(env.TAG, '-') }} # not for prereleases such as v1.2.0-rc.1
         run: |
+          # A manual run may have just created the tag on GitHub; fetch it.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
           major="${TAG%%.*}"
+          # Regenerating an older release's notes must not move the major tag back to it.
+          latest="$(git tag -l "$major.*.*" --sort=-v:refname | grep -v -- - | head -n 1)"
+          if [ "$latest" != "$TAG" ]; then
+            echo "$TAG isn't the newest $major release ($latest is); leaving $major where it is."
+            exit 0
+          fi
           git tag -f "$major" "$TAG^{commit}"
           git push -f origin "refs/tags/$major"
