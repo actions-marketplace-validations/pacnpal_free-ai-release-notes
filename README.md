@@ -280,7 +280,7 @@ All inputs are optional.
 | `instructions` | | Extra instructions added to the prompt. |
 | `title-template` | `{tag}: {title}` | Release title format. `{tag}` is the tag, `{title}` the AI title. When the fallback is used, the title is just the tag. |
 | `max-commits` | `200` | Maximum commits sent to the model. |
-| `max-input-chars` | `60000` | Maximum characters of git context sent to the model. |
+| `max-input-chars` | `60000` | Maximum characters of git context sent to the model. Commits flagged as breaking are always sent in full and don't count towards it. |
 | `temperature` | `0.3` | Sampling temperature. |
 | `max-tokens` | `4096` | Maximum tokens in the response. |
 | `retries` | `3` | Attempts against OpenRouter before giving up. Each attempt may land on a different free model. |
@@ -326,7 +326,7 @@ The reusable workflow doesn't declare permissions; it runs with what the **calle
 1. **Checks** that `OPENROUTER_API_KEY` is set and stops with instructions if not.
 2. **Checks out** the calling repository with full history and tags.
 3. **Works out the range**: the release tag (or `target` if the tag isn't created yet) and the previous tag.
-4. **Collects context**: commits flagged as breaking, commit subjects and bodies (merges excluded, up to `max-commits`), a diffstat of changed files, and GitHub's generated notes when permitted, trimmed to `max-input-chars`.
+4. **Collects context**: commits flagged as breaking, commit subjects and bodies (merges excluded, up to `max-commits`), a diffstat of changed files, and GitHub's generated notes when permitted, trimmed to `max-input-chars` (the flagged breaking commits are always sent in full).
 5. **Calls OpenRouter** with the `model` input (`openrouter/free` by default, which routes the request to a randomly chosen free model that supports the features asked for), plus any fallback models you listed. The model is asked for JSON with a `title` and Markdown `notes`: Breaking Changes first, then a summary, then New Features, Bug Fixes, Performance, Documentation and Maintenance. It is told not to invent changes. The answer is parsed defensively (code fences and `<think>` blocks are stripped) and validated.
 6. **Retries** on rate limits, server errors and unusable answers with backoff (5s, 10s, 20s, ...). If a model rejects JSON mode, later attempts drop it.
 7. **Checks breaking changes**: logs a warning for any flagged breaking commit the model's notes don't mention (see [Breaking changes](#breaking-changes)).

@@ -266,42 +266,57 @@ jobs:
           FOOTER_TOKEN = re.compile(r"^(?:BREAKING[ -]CHANGES?|[A-Za-z][\w-]*)(?::\s|\s#)")
 
 
+          def fence_step(text, fence):
+              """Return the code-fence state after one line: None outside a fence, else (character, length).
+
+              A block opens with ``` or ~~~ and closes only with the same character, at least as many
+              of them, and nothing after. A backtick run followed by more backticks is inline code.
+              """
+              run = re.match(r"^\s*(`{3,}|~{3,})(.*)$", text)
+              if run and run.group(1)[0] == "`" and "`" in run.group(2):
+                  run = None
+              if run and fence is None:
+                  return (run.group(1)[0], len(run.group(1)))
+              if run and fence and run.group(1)[0] == fence[0] and len(run.group(1)) >= fence[1] and not run.group(2).strip():
+                  return None
+              return fence
+
+
           def breaking_footers(body):
               """Return every BREAKING CHANGE footer in a commit body, each as a list of lines
-              (continuation lines included)."""
+              (continuation lines included; [""] for an empty footer). Footer-like lines inside
+              code blocks, e.g. a documented example, are ignored."""
               lines = body.splitlines()
               footers = []
+              fence = None
               i = 0
               while i < len(lines):
-                  match = BREAKING_FOOTER.match(lines[i])
+                  line = lines[i]
                   i += 1
+                  match = None if fence else BREAKING_FOOTER.match(line)
                   if not match:
+                      fence = fence_step(line, fence)
                       continue
                   value = [match.group(1).strip()]
-                  # Inside a ``` or ~~~ block, "key: value" lines are content, not footer tokens. A block
-                  # closes only with the same character, at least as many of them, and nothing after.
-                  fence = None
+                  inner = fence_step(value[0], None)  # the footer may open a block itself: BREAKING CHANGE: ```yaml
                   while i < len(lines):
                       following = lines[i]
-                      run = re.match(r"^\s*(`{3,}|~{3,})(.*)$", following)
-                      if run and run.group(1)[0] == "`" and "`" in run.group(2):
-                          run = None  # inline code such as ```x```: a backtick fence's info string has no backticks
-                      if run and fence is None:
-                          fence = (run.group(1)[0], len(run.group(1)))
-                      elif run and fence and run.group(1)[0] == fence[0] and len(run.group(1)) >= fence[1] and not run.group(2).strip():
-                          fence = None
-                      elif fence is None and FOOTER_TOKEN.match(following):
+                      if inner is None and FOOTER_TOKEN.match(following):
                           break  # the next footer (possibly another BREAKING CHANGE) starts here
+                      inner = fence_step(following, inner)  # inside a block, "key: value" lines are content
                       value.append(following.rstrip())
                       i += 1
-                  while value and not value[-1].strip():
+                  while len(value) > 1 and not value[-1].strip():
                       value.pop()
                   footers.append(value)
               return footers
 
 
           def footer_text(value, indent):
-              """First line, then continuation lines with their relative indentation, indented under it."""
+              """First line, then continuation lines with their relative indentation, indented under it.
+              A footer whose first line opens a code block starts the block on its own line."""
+              if re.match(r"^(`{3,}|~{3,})", value[0]):
+                  value = ["", *value]
               rest = textwrap.dedent("\n".join(value[1:])).strip("\n").splitlines()
               return value[0] + "".join(f"\n{indent}{line}" if line.strip() else "\n" for line in rest)
 
@@ -320,11 +335,13 @@ jobs:
                   continue
               sha, summary = sha.strip(), CONVENTIONAL_PREFIX.sub("", subject)
               item = f"- {summary} ({sha})"
-              if len(footers) == 1:
-                  item += f": {footer_text(footers[0], '  ')}".rstrip()
-              elif footers:
+              described = [value for value in footers if any(line.strip() for line in value)]  # skip empty footers
+              if len(described) == 1:
+                  text = footer_text(described[0], "  ").rstrip()
+                  item += ":" + (text if text.startswith("\n") else f" {text}")
+              elif described:
                   # Several BREAKING CHANGE footers in one commit: one sub-bullet each.
-                  item += ":" + "".join(f"\n  - {footer_text(value, '    ')}".rstrip() for value in footers)
+                  item += ":" + "".join(f"\n  - {footer_text(value, '    ')}".rstrip() for value in described)
               breaking_changes.append((sha, summary, item))
           if breaking_changes:
               print(f"Detected {len(breaking_changes)} breaking change(s) from commit markers.")
@@ -357,13 +374,19 @@ jobs:
                   print(f"GitHub generated notes unavailable ({exc}); continuing with git history only.")
 
           budget = env_num("IN_MAX_INPUT_CHARS", 60000)
+          context_parts = []
+          if breaking_text:
+              # Every flagged breaking change is mandatory, so this list is always sent in full and
+              # max-input-chars applies to the rest of the context.
+              context_parts.append(
+                  "## Breaking changes flagged in commit messages (every one MUST be listed under ⚠️ Breaking Changes)\n"
+                  + breaking_text
+              )
           sections = [
-              ("Breaking changes flagged in commit messages (every one MUST be listed under ⚠️ Breaking Changes)", breaking_text),
               ("GitHub generated notes (merged pull requests and contributors)", github_notes),
               ("Files changed", diffstat),
               ("Commits (newest first)", commits_text),
           ]
-          context_parts = []
           for heading, body in sections:
               if not body:
                   continue
