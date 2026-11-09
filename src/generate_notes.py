@@ -47,7 +47,9 @@ def set_output(name, value):
 
 
 def log(level, message):
-    # Keep model output out of the log: it could contain workflow commands.
+    # Keep model output out of the log: it could contain workflow commands. Messages can still carry
+    # API error text, so escape them as command data: a newline must not start a new command.
+    message = str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     print(f"::{level}::{message}", flush=True)
 
 
