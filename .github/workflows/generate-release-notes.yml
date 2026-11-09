@@ -348,12 +348,41 @@ jobs:
                   break
 
           # -------------------------------------------------------------- prompt
-          system_prompt = """You write release notes for software projects from git history.
-          Respond with ONLY a JSON object, without code fences, of the form {"title": string, "notes": string}.
+          system_prompt = """You are a release notes writer. You turn git history into release notes for the people who use the software.
+          Respond with ONLY a JSON object, without code fences or any other text, of the form {"title": string, "notes": string}.
 
           "title": a short, human-friendly release title (at most 60 characters) that captures the main theme of the release. Do not include the version number. No trailing period. No emoji.
 
-          "notes": GitHub-flavored Markdown. If the release has any breaking changes (changes that require users to modify code, configuration or workflows when upgrading: removed or renamed APIs, options or commands, changed defaults or behaviour, dropped platform support), the notes MUST begin with a level-3 "⚠️ Breaking Changes" section, before anything else, listing each one with what users need to do to upgrade. Every change listed in the input as a flagged breaking change is breaking, and its bullet must end with that commit's short hash in parentheses, e.g. (a1b2c3d). Next, write a 1-3 sentence summary of the release. Then group the remaining changes under level-3 headings chosen from this list, in this order, leaving out any that would be empty: "✨ New Features", "🐛 Bug Fixes", "⚡ Performance", "📚 Documentation", "🔧 Maintenance". Write each change as one concise, user-facing bullet and merge related commits into a single bullet. Keep pull request references (#123) and @mentions exactly as they appear in the input. Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed. Never invent changes that the input does not support. Do not add a top-level heading, the version number, or a "Full Changelog" link."""
+          "notes": GitHub-flavored Markdown that follows the rules below EXACTLY.
+
+          BREAKING CHANGES ALWAYS COME FIRST. THIS RULE OVERRIDES EVERY OTHER RULE.
+          - A breaking change is any change that forces users to change their code, configuration, scripts or workflows when they upgrade: removed or renamed APIs, options, commands, flags, files or settings; changed defaults or behaviour; newly required configuration; dropped platform, runtime or version support.
+          - Every item listed under "Breaking changes flagged in commit messages" IS a breaking change. You MUST include EVERY one of them. Never skip, merge away or downplay any of them, even if the change looks small or the input was truncated.
+          - If there is at least one breaking change, the VERY FIRST LINE of "notes" MUST be exactly: ### ⚠️ Breaking Changes
+          - Nothing may come before that heading: no summary, no title, no other heading, no blank line.
+          - Under that heading, write one bullet per breaking change. Each bullet MUST say what changed AND what users must do to upgrade. End the bullet of every flagged change with its short commit hash in parentheses, e.g. (a1b2c3d).
+          - Breaking changes MUST NOT appear under any other heading or anywhere else in the notes.
+          - If there are no breaking changes, leave the section out entirely. Never write "None" or an empty section.
+
+          After the breaking changes (or first, if there are none):
+          1. A 1-3 sentence summary of the release, as plain text with no heading.
+          2. The remaining changes grouped under these level-3 headings, in this order, leaving out any that would be empty: "### ✨ New Features", "### 🐛 Bug Fixes", "### ⚡ Performance", "### 📚 Documentation", "### 🔧 Maintenance".
+
+          Other rules:
+          - Write one concise, user-facing bullet per change and merge related commits into a single bullet.
+          - Keep pull request references (#123) and @mentions exactly as they appear in the input.
+          - Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed.
+          - Never invent changes that the input does not support.
+          - Do not add a top-level heading, the version number, or a "Full Changelog" link.
+
+          Layout when there are breaking changes:
+          ### ⚠️ Breaking Changes
+          - <what changed>. <what users must do to upgrade>. (<commit hash>)
+
+          <summary>
+
+          ### ✨ New Features
+          - <change>"""
           system_prompt = "\n".join(line.strip() for line in system_prompt.splitlines())
 
           user_prompt = "\n\n".join(
@@ -364,6 +393,9 @@ jobs:
                   f"Commits in this release: {total_commits}",
                   *([f"Additional instructions from the maintainers:\n{env('IN_INSTRUCTIONS')}"] if env("IN_INSTRUCTIONS") else []),
                   *context_parts,
+                  *([f"REMINDER: this release has {len(breaking_changes)} flagged breaking change(s). \"notes\" MUST start "
+                     "with the line ### ⚠️ Breaking Changes and list EVERY one of them first, each ending with its "
+                     "commit hash."] if breaking_changes else []),
               ]
           )
 
@@ -458,129 +490,16 @@ jobs:
                   time.sleep(min(5 * 2 ** (attempt - 1), 60))
 
           # -------------------------------------------------------------- output
-          # Headings that announce breaking changes ("⚠️ Breaking Changes", "Breaking:", "Breaking API
-          # changes"), not ones that merely mention the word ("Fixes for breaking builds").
-          BREAKING_HEADING = re.compile(r"^[^\w]*breaking\b(?![ -]?(?:builds?|tests?)\b)", re.I)
           GITHUB_BODY_LIMIT = 125000
-          LIST_LINE = re.compile(r"^(\s*([-*+]|\d+[.)])\s|\s{2,}\S)")  # a list item or an indented continuation
-
-
-          def breaking_first(markdown):
-              """Move every "Breaking" section (with its sub-sections) to the top.
-
-              If none exists but commits flagged breaking changes, add one.
-              """
-              # [heading level, is breaking, lines, index of first sub-heading,
-              #  index of the last line of the section's own list (items, continuations and their code blocks)]
-              blocks = [[0, False, [], None, None]]
-              fence = None  # (character, length) of the open code fence
-              last_markdown_level = 0  # level of the most recent "#" heading
-              item_open = False  # inside a list item of the current block, before any sub-heading
-              fence_in_item = False  # the open code fence belongs to that list item
-              for line in markdown.splitlines():
-                  # A fence may be indented (inside a list item) or follow a list marker ("- ```sh").
-                  run = re.match(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(`{3,}|~{3,})(.*)$", line)
-                  marker = run.group(1) if run else ""
-                  if marker.startswith("`") and fence is None and "`" in run.group(2):
-                      marker = ""  # inline code such as ```x```: a backtick fence's info string has no backticks
-                  in_fence = fence is not None or bool(marker)
-                  opening = fence is None and bool(marker)
-                  if fence is None and marker:
-                      fence = (marker[0], len(marker))
-                  elif fence and marker[:1] == fence[0] and len(marker) >= fence[1] and line.strip() == marker:
-                      fence = None  # closing fence: same character, at least as long, nothing after it
-                  # Markdown headings, plus whole-line bold text used as a heading.
-                  heading = None if in_fence else (
-                      re.match(r"^(#{1,6})\s+(.*)$", line) or re.match(r"^(\*\*)(.+?)\*\*:?\s*$", line)
-                  )
-                  # A bold line under a "#" heading is a label one level below it ("**Migration:**" stays
-                  # in its section), but never above the prompt's section level 3: with no "#" heading
-                  # above, or under a "# Title", a following "#### Migration" stays with it while
-                  # "### Features" does not.
-                  if not heading:
-                      level = 0
-                  elif heading.group(1).startswith("#"):
-                      level = last_markdown_level = len(heading.group(1))
-                  else:
-                      level = max(last_markdown_level + 1, 3)
-                  current = blocks[-1]
-                  if heading and not (current[1] and level > current[0]):
-                      blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line], None, None])
-                      item_open = fence_in_item = False
-                  else:
-                      if heading and current[3] is None:
-                          current[3] = len(current[2])  # a sub-heading kept inside a breaking section
-                          item_open = False
-                      elif current[3] is None:
-                          if opening:
-                              # A code block right after a list item (e.g. a migration example), or opened
-                              # on the item's own line ("- ```sh"), belongs to that item.
-                              if LIST_LINE.match(line) and not line[:1].isspace():
-                                  item_open = True
-                              fence_in_item = item_open
-                              if fence_in_item:
-                                  current[4] = len(current[2])
-                          elif in_fence:
-                              if fence_in_item:
-                                  current[4] = len(current[2])
-                          elif not line.strip():
-                              pass  # blank lines don't end a list item
-                          elif LIST_LINE.match(line):
-                              item_open = True
-                              current[4] = len(current[2])
-                          else:
-                              item_open = False  # unindented text after the list ends it
-                      current[2].append(line)
-
-              def join(selected):
-                  texts = ("\n".join(b[2]).strip("\n") for b in selected)
-                  return "\n\n".join(t for t in texts if t.strip())
-
-              breaking = [b for b in blocks if b[1]]
-              rest = join(b for b in blocks if not b[1])
-              if breaking:
-                  section = join(breaking)
-                  # Match by hash. Fall back to the subject only when it is unambiguous: no other flagged
-                  # subject equals or contains it, and it appears as a whole phrase (so "remove --force"
-                  # is not found inside "remove --force-all").
-                  subjects = [summary.lower() for _, summary, _ in breaking_changes]
-
-                  def subject_present(summary):
-                      lowered = summary.lower()
-                      if sum(lowered in other for other in subjects) != 1:
-                          return False
-                      return re.search(r"(?<![\w-])" + re.escape(lowered) + r"(?![\w-])", section.lower()) is not None
-
-                  missing = [
-                      item for sha, summary, item in breaking_changes
-                      if sha not in section and not subject_present(summary)
-                  ]
-                  if missing:
-                      # Insert after the first breaking section's own bullets, before any sub-heading
-                      # (found by the fence-aware parse above, so never inside a code block).
-                      first = breaking[0][2]
-                      # Right after the section's own list, so not after any text that follows it.
-                      if breaking[0][4] is not None:
-                          at = breaking[0][4] + 1
-                      else:
-                          at = breaking[0][3] if breaking[0][3] is not None else len(first)
-                          while at > 1 and not first[at - 1].strip():
-                              at -= 1
-                      if not (LIST_LINE.match(first[at - 1]) or first[at - 1].lstrip().startswith(("#", "**"))):
-                          missing = [""] + missing  # e.g. after a code block: start a new list
-                      first[at:at] = missing
-                  top = join(breaking)
-              elif breaking_text:
-                  top = f"### ⚠️ Breaking Changes\n{breaking_text}"
-              else:
-                  return markdown
-              return f"{top}\n\n{rest}".strip()
-
 
           compare_link = f"**Full Changelog**: {server}/{repo}/compare/{previous_tag}...{tag}" if previous_tag else ""
           if ai_notes:
               title = env("IN_TITLE_TEMPLATE", "{tag}: {title}").replace("{tag}", tag).replace("{title}", ai_title)
-              notes = breaking_first(ai_notes)
+              notes = ai_notes
+              # The model places breaking changes itself; only report flagged commits it didn't mention.
+              unmentioned = [sha for sha, _, _ in breaking_changes if sha not in ai_notes]
+              if unmentioned:
+                  log("warning", f"The model's notes don't mention flagged breaking commit(s) {', '.join(unmentioned)} by hash.")
               if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
                   notes += f"\n\n{compare_link}"
           else:
@@ -594,10 +513,11 @@ jobs:
                   notes = "## What's Changed\n" + "\n".join(line.splitlines()[0] for line in commit_lines)
                   if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
                       notes += f"\n\n{compare_link}"
-              notes = breaking_first(notes)
+              if breaking_text:
+                  notes = f"### ⚠️ Breaking Changes\n{breaking_text}\n\n{notes}"
 
           if len(notes) >= GITHUB_BODY_LIMIT:  # the notes file adds a trailing newline
-              # GitHub rejects release bodies over 125,000 characters. Breaking changes are at the top, so they survive.
+              # GitHub rejects release bodies over 125,000 characters. Breaking changes come first, so they survive.
               link = compare_link if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK") else ""
               note = "\n\n_Release notes truncated to fit GitHub's size limit._" + (f"\n\n{link}" if link else "")
               notes = notes[: GITHUB_BODY_LIMIT - 1 - len(note)].rsplit("\n", 1)[0] + note
