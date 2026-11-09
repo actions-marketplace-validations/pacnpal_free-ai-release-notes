@@ -329,10 +329,13 @@ DEFAULT_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3.5
 models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or list(DEFAULT_MODELS)
 print(f"Model{'s' if len(models) > 1 else ''}: {', '.join(models)}")
 # Every free model on OpenRouter is a reasoning model, and their reasoning counts against max_tokens.
-ALL_FREE = all(m == FREE_ROUTER or m.endswith(":free") for m in models)
+def all_free():
+    # Checked per request: dropping an unknown model can leave only free ones.
+    return all(m == FREE_ROUTER or m.endswith(":free") for m in models)
 
 
 def call_openrouter(use_json_mode):
+    free = all_free()
     body = {
         "model": models[0],
         "messages": [
@@ -342,10 +345,10 @@ def call_openrouter(use_json_mode):
         "temperature": env_num("IN_TEMPERATURE", 0.3, float),
         # Free models need room to reason. Paid requests hold their max_tokens cost against the
         # account up front, so they keep a smaller budget unless `max-tokens` says otherwise.
-        "max_tokens": env_num("IN_MAX_TOKENS", 16384 if ALL_FREE else 4096),
+        "max_tokens": env_num("IN_MAX_TOKENS", 16384 if free else 4096),
         "reasoning": {"exclude": True},
     }
-    if ALL_FREE:
+    if free:
         # Keep reasoning short so it leaves room for the answer. Not sent for paid models: on
         # Claude, for example, an effort turns extended thinking on.
         body["reasoning"]["effort"] = "low"
