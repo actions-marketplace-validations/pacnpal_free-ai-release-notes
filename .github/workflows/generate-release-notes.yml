@@ -56,7 +56,7 @@ on:
       max-tokens:
         description: Maximum tokens in the model response.
         type: number
-        default: 4096
+        default: 16384
       retries:
         description: Number of attempts against OpenRouter before giving up (free models are rate limited and vary in quality).
         type: number

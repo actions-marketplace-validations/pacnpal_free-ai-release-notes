@@ -42,7 +42,7 @@ inputs:
     default: '0.3'
   max-tokens:
     description: Maximum tokens in the model response.
-    default: '4096'
+    default: '16384'
   retries:
     description: Number of attempts against OpenRouter before giving up (free models are rate limited and vary in quality).
     default: '3'

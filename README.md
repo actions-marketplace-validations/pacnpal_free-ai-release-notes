@@ -293,7 +293,7 @@ Only `openrouter-api-key` is required.
 | `max-commits` | `200` | Maximum commits sent to the model. |
 | `max-input-chars` | `60000` | Maximum characters of git context sent to the model. Commits flagged as breaking are always sent in full and don't count towards it. |
 | `temperature` | `0.3` | Sampling temperature. |
-| `max-tokens` | `4096` | Maximum tokens in the response. |
+| `max-tokens` | `16384` | Maximum tokens in the response, including the model's hidden reasoning. Free models are all reasoning models and can use several thousand tokens before they answer. |
 | `retries` | `3` | Attempts against OpenRouter before giving up. Each attempt may land on a different free model. |
 | `use-github-notes` | `true` | Also send GitHub's own generated notes (merged PRs with authors, new contributors) as context. Needs `contents: write`; skipped silently without it. |
 | `append-changelog-link` | `true` | Append a **Full Changelog** compare link. |
@@ -338,7 +338,7 @@ The action uses the workflow's `GITHUB_TOKEN` (or `github-token`), so it can do 
 3. **Works out the range**: the release tag (or `target` if the tag isn't created yet) and the previous tag.
 4. **Collects context**: commits flagged as breaking, commit subjects and bodies (merges excluded, up to `max-commits`), a diffstat of changed files, and GitHub's generated notes when permitted, trimmed to `max-input-chars` (the flagged breaking commits are always sent in full).
 5. **Calls OpenRouter** with the `model` input (`openrouter/free` by default, which routes the request to a randomly chosen free model that supports the features asked for), plus any fallback models you listed. The model is asked for JSON with a `title` and Markdown `notes`: Breaking Changes first, then a summary, then New Features, Bug Fixes, Performance, Documentation and Maintenance. It is told not to invent changes. The answer is parsed defensively (code fences and `<think>` blocks are stripped) and validated.
-6. **Retries** on rate limits, server errors and unusable answers with backoff (5s, 10s, 20s, ...). If a model rejects JSON mode, later attempts drop it. An HTTP `402` caused by OpenRouter's temporary in-flight spending hold is retried after its `Retry-After`; any other `402` (insufficient credits) stops retrying and uses the fallback.
+6. **Retries** on rate limits, server errors and unusable answers with backoff (5s, 10s, 20s, ...). If a model rejects JSON mode, later attempts drop it. An HTTP `402` caused by OpenRouter's temporary in-flight spending hold is retried after its `Retry-After`; any other `402` (insufficient credits) stops retrying and uses the fallback, and so does a `429` saying the daily free-model limit is used up.
 7. **Checks breaking changes**: logs a warning for any flagged breaking commit the model's notes don't mention (see [Breaking changes](#breaking-changes)).
 8. **Writes outputs** and a preview to the job summary, and with `create-release: true` creates the release (`gh release create`) or edits the existing one (`gh release edit`). Notes longer than GitHub's 125,000-character release limit are cut at a line boundary with a note saying so.
 
@@ -346,7 +346,9 @@ Model output is never printed to the log or executed: it only goes to step outpu
 
 ## Free tier limits and fallback
 
-`openrouter/free` costs nothing, but free models are rate-limited per account (a per-minute limit and a daily request cap that is higher once you've bought any credits; see [OpenRouter's limits](https://openrouter.ai/docs/api-reference/limits)). One release uses one request, plus one per retry, so normal release cadences stay well inside the limits.
+`openrouter/free` costs nothing, but free models are rate-limited per account (a per-minute limit and a daily request cap that is higher once you've bought any credits; see [OpenRouter's limits](https://openrouter.ai/docs/api-reference/limits)). One release uses one request, plus one per retry, so normal release cadences stay well inside the limits. Without credits the daily cap is 50 free-model requests per account, shared by every repository using the same key.
+
+All of OpenRouter's free models reason before answering, and that reasoning counts against `max-tokens`. When every model in `model` is free, the action asks for low reasoning effort and leaves room for the answer (`max-tokens` defaults to 16384). Paid models aren't sent a reasoning effort, so their own defaults apply.
 
 Because the router picks a different free model each time, quality and formatting vary. The workflow handles that by validating the answer and retrying. If every attempt fails:
 
@@ -368,7 +370,8 @@ Commit messages, changed file names and PR titles from the release range are sen
 | `OpenRouter rejected OPENROUTER_API_KEY (HTTP 401)` | The key is wrong or revoked; create a new one and update the secret. |
 | Warnings with HTTP `404` "No endpoints found matching your data policy" | Your OpenRouter privacy settings exclude every free provider. Allow free endpoints in [privacy settings](https://openrouter.ai/settings/privacy). |
 | Warning with HTTP `402` | If it says the in-flight spending budget is temporarily full, the workflow waits for OpenRouter's `Retry-After` and retries on its own. Otherwise it means insufficient credits (the warning includes OpenRouter's hint); the workflow stops retrying and uses the fallback notes. With a paid model, add credits or add `openrouter/free` as a fallback in `model`. If you're already on free models, your OpenRouter balance is negative, which blocks free models too: add credits. |
-| Warnings with HTTP `429` | Free-tier rate limit. Raise `retries`, or wait; the fallback still publishes the release. |
+| Warnings with HTTP `429` | Free-tier rate limit. Raise `retries`, or wait; the fallback still publishes the release. If the warning says the daily limit is used up, retrying won't help until it resets (midnight UTC), so the action stops and uses the fallback. |
+| `the model ran out of max-tokens before finishing its answer` | The model spent its budget reasoning (the warning shows how many tokens). The next attempt usually lands on a different free model. If it keeps happening, raise `max-tokens` or set `model` to a model that answers reliably. |
 | `No tag to release` | The workflow didn't run on a tag. Pass `tag:`. |
 | `Resource not accessible by integration` when creating the release | The workflow needs `permissions: contents: write`. |
 | Notes compare against the wrong tag | Set `tag-pattern` or `previous-tag`. |

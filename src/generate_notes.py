@@ -323,6 +323,8 @@ def parse_response(content):
 FREE_ROUTER = "openrouter/free"
 models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or [FREE_ROUTER]
 print(f"Model{'s' if len(models) > 1 else ''}: {', '.join(models)}")
+# Every free model on OpenRouter is a reasoning model, and their reasoning counts against max_tokens.
+ALL_FREE = all(m == FREE_ROUTER or m.endswith(":free") for m in models)
 
 
 def call_openrouter(use_json_mode):
@@ -333,9 +335,13 @@ def call_openrouter(use_json_mode):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": env_num("IN_TEMPERATURE", 0.3, float),
-        "max_tokens": env_num("IN_MAX_TOKENS", 4096),
+        "max_tokens": env_num("IN_MAX_TOKENS", 16384),
         "reasoning": {"exclude": True},
     }
+    if ALL_FREE:
+        # Keep reasoning short so it leaves room for the answer. Not sent for paid models: on
+        # Claude, for example, an effort turns extended thinking on.
+        body["reasoning"]["effort"] = "low"
     if len(models) > 1:
         body["models"] = models[1:]  # OpenRouter tries these in order if the first fails
     if use_json_mode:
@@ -360,7 +366,10 @@ def call_openrouter(use_json_mode):
     try:
         title, notes = parse_response(content)
     except ValueError as exc:
-        raise ValueError(f"{exc} ({describe_response(data, choice, content)})") from None
+        reason = describe_response(data, choice, content)
+        if choice.get("finish_reason") == "length":
+            raise ValueError(f"the model ran out of max-tokens before finishing its answer ({reason})") from None
+        raise ValueError(f"{exc} ({reason})") from None
     return title, notes, data.get("model", "")
 
 
@@ -392,11 +401,16 @@ for attempt in range(1, attempts + 1):
         detail = body_text[:500]
         if exc.code == 401:
             sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
+        try:
+            metadata = (json.loads(body_text).get("error") or {}).get("metadata") or {}
+        except (ValueError, AttributeError):
+            metadata = {}
+        if exc.code == 429 and metadata.get("limit_source") == "openrouter_free_tier_daily":
+            # The daily cap on free-model requests: nothing succeeds again until it resets.
+            hint = metadata.get("remedy_hint") or "Wait for the daily reset, or buy credits to raise the limit."
+            log("warning", f"OpenRouter's daily limit on free-model requests is used up (HTTP 429). {hint}")
+            break
         if exc.code == 402:
-            try:
-                metadata = (json.loads(body_text).get("error") or {}).get("metadata") or {}
-            except (ValueError, AttributeError):
-                metadata = {}
             if metadata.get("limit_source") == "openrouter_in_flight_budget":
                 # A temporary hold while recent paid requests settle: wait for Retry-After and retry.
                 try:
