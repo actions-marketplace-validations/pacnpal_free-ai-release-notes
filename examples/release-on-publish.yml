@@ -1,0 +1,18 @@
+# Rewrite the title and notes of a release when it is published from the
+# GitHub UI (or by another tool), keeping everything else about the release.
+name: AI release notes
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
+    with:
+      create-release: true # updates the existing release in place
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

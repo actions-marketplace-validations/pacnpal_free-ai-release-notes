@@ -1,0 +1,20 @@
+# This repository releases itself with its own reusable workflow.
+# Requires the OPENROUTER_API_KEY repository secret.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/generate-release-notes.yml
+    with:
+      create-release: true
+      tag-pattern: 'v*'
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

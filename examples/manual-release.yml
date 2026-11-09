@@ -1,0 +1,29 @@
+# Cut a release by hand: pick a version, the tag is created on the selected
+# branch and the release gets an AI-written title and notes.
+name: Manual release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to create (e.g. v1.4.0)
+        required: true
+      prerelease:
+        description: Mark as prerelease
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
+    with:
+      tag: ${{ inputs.version }}
+      target: ${{ github.sha }}
+      prerelease: ${{ inputs.prerelease }}
+      draft: true # review before publishing
+      create-release: true
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
