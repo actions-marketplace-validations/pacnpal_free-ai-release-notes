@@ -258,7 +258,8 @@ Breaking changes are always the first thing in the notes, above the summary:
 
 - **Detected from commits.** Commits marked as breaking with [Conventional Commits](https://www.conventionalcommits.org/) (`feat!: ...`, `fix(api)!: ...`, or a `BREAKING CHANGE: ...` footer) are collected across the whole release range, even beyond `max-commits`, and handed to the model as changes it must list under **⚠️ Breaking Changes**, with what users need to do to upgrade.
 - **Recognised by the model.** The model is also told to treat removed or renamed APIs, options and commands, changed defaults, and dropped platform support as breaking, even without a marker.
-- **Enforced after generation.** Whatever the model writes, any section whose heading mentions "breaking" (with its subsections, e.g. a "Migration" heading) is moved to the very top. If the model left the section out but commits flagged breaking changes, the workflow adds the section itself from those commits.
+- **Enforced after generation.** Whatever the model writes, any section whose heading announces breaking changes ("⚠️ Breaking Changes", "Breaking:", and so on, but not e.g. "Fixes for breaking builds") is moved to the very top, together with its subsections and labels such as a "Migration" heading or `**Migration:**`. If the model left the section out but commits flagged breaking changes, the workflow adds the section itself from those commits.
+- **Nothing flagged is dropped.** The model is asked to end each flagged breaking change with its commit hash. Any flagged commit whose hash or subject doesn't appear in the model's breaking section is added to it. If a model ignores the hash instruction this can repeat an item in different words, which is preferable to a missing upgrade warning.
 - **Kept in the fallback.** When AI generation fails, the fallback notes also start with a **⚠️ Breaking Changes** section built from the flagged commits.
 
 Marking breaking commits with `!` or `BREAKING CHANGE:` is the most reliable way to make sure nothing is missed.
@@ -359,6 +360,7 @@ Commit messages, changed file names and PR titles from the release range are sen
 | `Resource not accessible by integration` when creating the release | The caller needs `permissions: contents: write`. |
 | Notes compare against the wrong tag | Set `tag-pattern` or `previous-tag`. |
 | A breaking change isn't listed | Mark the commit with `!` (e.g. `feat!: ...`) or a `BREAKING CHANGE:` footer; flagged commits are always listed. |
+| `Release notes exceeded GitHub's 125,000-character limit` | The notes were cut at a line boundary to fit GitHub's release body limit; breaking changes are at the top, so they're kept. Lower `max-commits` or narrow the range with `previous-tag`. |
 | `ai-generated` is `false` | All attempts failed; the job's warnings say why. |
 
 ## Pinning a version

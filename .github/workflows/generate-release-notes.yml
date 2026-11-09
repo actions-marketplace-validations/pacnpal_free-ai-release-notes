@@ -281,7 +281,7 @@ jobs:
               return None
 
 
-          breaking_changes = []
+          breaking_changes = []  # (short sha, subject without type prefix, Markdown bullet)
           raw_breaking = git(
               "log", "--no-merges", "-E",
               "--grep=^[A-Za-z]+(\\([^)]*\\))?!:", "--grep=^BREAKING[ -]CHANGES?:",
@@ -293,13 +293,14 @@ jobs:
               footer = breaking_footer(body)
               if not BREAKING_SUBJECT.match(subject) and footer is None:
                   continue
-              item = f"- {CONVENTIONAL_PREFIX.sub('', subject)} ({sha.strip()})"
+              sha, summary = sha.strip(), CONVENTIONAL_PREFIX.sub("", subject)
+              item = f"- {summary} ({sha})"
               if footer:
                   item += f": {footer[0]}" + "".join(f"\n  {line.strip()}" for line in footer[1:])
-              breaking_changes.append(item)
+              breaking_changes.append((sha, summary, item))
           if breaking_changes:
               print(f"Detected {len(breaking_changes)} breaking change(s) from commit markers.")
-          breaking_text = "\n".join(breaking_changes)
+          breaking_text = "\n".join(item for _, _, item in breaking_changes)
 
           diffstat = git("diff", "--stat=120", f"{previous_tag}..{head_sha}", check=False) if previous_tag else ""
           stat_lines = diffstat.splitlines()
@@ -352,7 +353,7 @@ jobs:
 
           "title": a short, human-friendly release title (at most 60 characters) that captures the main theme of the release. Do not include the version number. No trailing period. No emoji.
 
-          "notes": GitHub-flavored Markdown. If the release has any breaking changes (changes that require users to modify code, configuration or workflows when upgrading: removed or renamed APIs, options or commands, changed defaults or behaviour, dropped platform support), the notes MUST begin with a level-3 "⚠️ Breaking Changes" section, before anything else, listing each one with what users need to do to upgrade. Every change listed in the input as a flagged breaking change is breaking. Next, write a 1-3 sentence summary of the release. Then group the remaining changes under level-3 headings chosen from this list, in this order, leaving out any that would be empty: "✨ New Features", "🐛 Bug Fixes", "⚡ Performance", "📚 Documentation", "🔧 Maintenance". Write each change as one concise, user-facing bullet and merge related commits into a single bullet. Keep pull request references (#123) and @mentions exactly as they appear in the input. Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed. Never invent changes that the input does not support. Do not add a top-level heading, the version number, or a "Full Changelog" link."""
+          "notes": GitHub-flavored Markdown. If the release has any breaking changes (changes that require users to modify code, configuration or workflows when upgrading: removed or renamed APIs, options or commands, changed defaults or behaviour, dropped platform support), the notes MUST begin with a level-3 "⚠️ Breaking Changes" section, before anything else, listing each one with what users need to do to upgrade. Every change listed in the input as a flagged breaking change is breaking, and its bullet must end with that commit's short hash in parentheses, e.g. (a1b2c3d). Next, write a 1-3 sentence summary of the release. Then group the remaining changes under level-3 headings chosen from this list, in this order, leaving out any that would be empty: "✨ New Features", "🐛 Bug Fixes", "⚡ Performance", "📚 Documentation", "🔧 Maintenance". Write each change as one concise, user-facing bullet and merge related commits into a single bullet. Keep pull request references (#123) and @mentions exactly as they appear in the input. Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed. Never invent changes that the input does not support. Do not add a top-level heading, the version number, or a "Full Changelog" link."""
           system_prompt = "\n".join(line.strip() for line in system_prompt.splitlines())
 
           user_prompt = "\n\n".join(
@@ -446,7 +447,7 @@ jobs:
                           if FREE_ROUTER in models or all(m.endswith(":free") for m in models)
                           else f"Add credits, or add {FREE_ROUTER} as a fallback in the `model` input to stay free."
                       )
-                      log("warning", f"OpenRouter returned HTTP 402 (insufficient credits) for {', '.join(models)}. {hint}")
+                      log("warning", f"OpenRouter returned HTTP 402 (insufficient credits) for {', '.join(models)}. {hint} Detail: {detail}")
                       break
                   if exc.code == 400 and use_json_mode:
                       use_json_mode = False
@@ -457,7 +458,10 @@ jobs:
                   time.sleep(min(5 * 2 ** (attempt - 1), 60))
 
           # -------------------------------------------------------------- output
-          BREAKING_HEADING = re.compile(r"(?<!non-)(?<!non )\bbreaking\b", re.I)
+          # Headings that announce breaking changes ("⚠️ Breaking Changes", "Breaking:", "Breaking API
+          # changes"), not ones that merely mention the word ("Fixes for breaking builds").
+          BREAKING_HEADING = re.compile(r"^[^\w]*breaking\b(?![ -]?(?:builds?|tests?)\b)", re.I)
+          GITHUB_BODY_LIMIT = 125000
 
 
           def breaking_first(markdown):
@@ -479,7 +483,8 @@ jobs:
                   heading = None if in_fence else (
                       re.match(r"^(#{1,6})\s+(.*)$", line) or re.match(r"^(\*\*)(.+?)\*\*:?\s*$", line)
                   )
-                  level = (len(heading.group(1)) if heading.group(1).startswith("#") else 6) if heading else 0
+                  # Bold labels rank below every Markdown heading, so "**Migration:**" stays in its section.
+                  level = (len(heading.group(1)) if heading.group(1).startswith("#") else 7) if heading else 0
                   current = blocks[-1]
                   if heading and not (current[1] and level > current[0]):
                       blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line]])
@@ -493,6 +498,18 @@ jobs:
               breaking = [b for b in blocks if b[1]]
               rest = join(b for b in blocks if not b[1])
               if breaking:
+                  section = join(breaking)
+                  missing = [
+                      item for sha, summary, item in breaking_changes
+                      if sha not in section and summary.lower() not in section.lower()
+                  ]
+                  if missing:
+                      # Insert after the first breaking section's own bullets, before any sub-heading.
+                      first = breaking[0][2]
+                      at = next((i for i, l in enumerate(first) if i and re.match(r"^(#{1,6}\s|\*\*.+\*\*:?\s*$)", l)), len(first))
+                      while at > 1 and not first[at - 1].strip():
+                          at -= 1
+                      first[at:at] = missing
                   top = join(breaking)
               elif breaking_text:
                   top = f"### ⚠️ Breaking Changes\n{breaking_text}"
@@ -519,6 +536,12 @@ jobs:
                   if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
                       notes += f"\n\n{compare_link}"
               notes = breaking_first(notes)
+
+          if len(notes) >= GITHUB_BODY_LIMIT:  # the notes file adds a trailing newline
+              # GitHub rejects release bodies over 125,000 characters. Breaking changes are at the top, so they survive.
+              note = "\n\n_Release notes truncated to fit GitHub's size limit._" + (f"\n\n{compare_link}" if compare_link else "")
+              notes = notes[: GITHUB_BODY_LIMIT - 1 - len(note)].rsplit("\n", 1)[0] + note
+              log("warning", "Release notes exceeded GitHub's 125,000-character limit and were truncated.")
 
           notes_file = os.path.join(env("RUNNER_TEMP") or ".", "release-notes.md")
           with open(notes_file, "w", encoding="utf-8") as fh:
