@@ -471,6 +471,7 @@ jobs:
               """
               blocks = [[0, False, []]]  # [heading level, is breaking, lines]
               fence = None  # (character, length) of the open code fence
+              last_markdown_level = 0  # level of the most recent "#" heading
               for line in markdown.splitlines():
                   run = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
                   marker = run.group(1) if run else ""
@@ -483,8 +484,15 @@ jobs:
                   heading = None if in_fence else (
                       re.match(r"^(#{1,6})\s+(.*)$", line) or re.match(r"^(\*\*)(.+?)\*\*:?\s*$", line)
                   )
-                  # Bold labels rank below every Markdown heading, so "**Migration:**" stays in its section.
-                  level = (len(heading.group(1)) if heading.group(1).startswith("#") else 7) if heading else 0
+                  # A bold line under a "#" heading is a label one level below it ("**Migration:**" stays
+                  # in its section); with no "#" heading above, it is a section heading at the prompt's
+                  # level 3, so a following "#### Migration" stays with it but "### Features" does not.
+                  if not heading:
+                      level = 0
+                  elif heading.group(1).startswith("#"):
+                      level = last_markdown_level = len(heading.group(1))
+                  else:
+                      level = last_markdown_level + 1 if last_markdown_level else 3
                   current = blocks[-1]
                   if heading and not (current[1] and level > current[0]):
                       blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line]])
