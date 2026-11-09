@@ -321,7 +321,10 @@ def parse_response(content):
 
 
 FREE_ROUTER = "openrouter/free"
-models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or [FREE_ROUTER]
+# The default when `model` is empty. These answered every test request; the free router comes last
+# in case both are busy.
+DEFAULT_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3.5-super-vl:free", FREE_ROUTER]
+models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or list(DEFAULT_MODELS)
 print(f"Model{'s' if len(models) > 1 else ''}: {', '.join(models)}")
 # Every free model on OpenRouter is a reasoning model, and their reasoning counts against max_tokens.
 ALL_FREE = all(m == FREE_ROUTER or m.endswith(":free") for m in models)
@@ -335,7 +338,9 @@ def call_openrouter(use_json_mode):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": env_num("IN_TEMPERATURE", 0.3, float),
-        "max_tokens": env_num("IN_MAX_TOKENS", 16384),
+        # Free models need room to reason. Paid requests hold their max_tokens cost against the
+        # account up front, so they keep a smaller budget unless `max-tokens` says otherwise.
+        "max_tokens": env_num("IN_MAX_TOKENS", 16384 if ALL_FREE else 4096),
         "reasoning": {"exclude": True},
     }
     if ALL_FREE:
@@ -391,7 +396,9 @@ def describe_response(data, choice, content):
 ai_title = ai_notes = used_model = ""
 attempts = max(env_num("IN_RETRIES", 3), 1)
 use_json_mode = True
-for attempt in range(1, attempts + 1):
+attempt = 0
+while attempt < attempts:
+    attempt += 1
     try:
         ai_title, ai_notes, used_model = call_openrouter(use_json_mode)
         print(f"Generated notes with {used_model or 'unknown model'} on attempt {attempt}.")
@@ -402,9 +409,18 @@ for attempt in range(1, attempts + 1):
         if exc.code == 401:
             sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
         try:
-            metadata = (json.loads(body_text).get("error") or {}).get("metadata") or {}
+            error = json.loads(body_text).get("error") or {}
         except (ValueError, AttributeError):
-            metadata = {}
+            error = {}
+        metadata = error.get("metadata") or {} if isinstance(error, dict) else {}
+        unknown = re.match(r"(\S+) is not a valid model ID", str(error.get("message", "")) if isinstance(error, dict) else "")
+        if exc.code == 400 and unknown and unknown.group(1) in models and len(models) > 1:
+            # One unknown model rejects the whole request, fallbacks included (e.g. a free model
+            # that was retired). Drop it and try the rest without using up an attempt.
+            models.remove(unknown.group(1))
+            log("warning", f"OpenRouter doesn't know the model {unknown.group(1)}; trying {', '.join(models)}.")
+            attempt -= 1
+            continue
         if exc.code == 429 and metadata.get("limit_source") == "openrouter_free_tier_daily":
             # The daily cap on free-model requests: nothing succeeds again until it resets.
             hint = metadata.get("remedy_hint") or "Wait for the daily reset, or buy credits to raise the limit."
