@@ -266,18 +266,23 @@ jobs:
           FOOTER_TOKEN = re.compile(r"^(?:BREAKING[ -]CHANGES?|[A-Za-z][\w-]*)(?::\s|\s#)")
 
 
-          def breaking_footer(body):
-              """Return the lines of a BREAKING CHANGE footer, continuation lines included, or None."""
+          def breaking_footers(body):
+              """Return every BREAKING CHANGE footer in a commit body, each as a list of lines
+              (continuation lines included)."""
               lines = body.splitlines()
-              for i, line in enumerate(lines):
-                  match = BREAKING_FOOTER.match(line)
+              footers = []
+              i = 0
+              while i < len(lines):
+                  match = BREAKING_FOOTER.match(lines[i])
+                  i += 1
                   if not match:
                       continue
                   value = [match.group(1).strip()]
                   # Inside a ``` or ~~~ block, "key: value" lines are content, not footer tokens. A block
                   # closes only with the same character, at least as many of them, and nothing after.
                   fence = None
-                  for following in lines[i + 1 :]:
+                  while i < len(lines):
+                      following = lines[i]
                       run = re.match(r"^\s*(`{3,}|~{3,})(.*)$", following)
                       if run and run.group(1)[0] == "`" and "`" in run.group(2):
                           run = None  # inline code such as ```x```: a backtick fence's info string has no backticks
@@ -286,12 +291,19 @@ jobs:
                       elif run and fence and run.group(1)[0] == fence[0] and len(run.group(1)) >= fence[1] and not run.group(2).strip():
                           fence = None
                       elif fence is None and FOOTER_TOKEN.match(following):
-                          break
+                          break  # the next footer (possibly another BREAKING CHANGE) starts here
                       value.append(following.rstrip())
+                      i += 1
                   while value and not value[-1].strip():
                       value.pop()
-                  return value
-              return None
+                  footers.append(value)
+              return footers
+
+
+          def footer_text(value, indent):
+              """First line, then continuation lines with their relative indentation, indented under it."""
+              rest = textwrap.dedent("\n".join(value[1:])).strip("\n").splitlines()
+              return value[0] + "".join(f"\n{indent}{line}" if line.strip() else "\n" for line in rest)
 
 
           breaking_changes = []  # (short sha, subject without type prefix, Markdown bullet)
@@ -303,15 +315,16 @@ jobs:
           for entry in filter(None, raw_breaking.split("\x1e")):
               sha, subject, body = (entry.split("\x1f") + ["", "", ""])[:3]
               subject = subject.strip()
-              footer = breaking_footer(body)
-              if not BREAKING_SUBJECT.match(subject) and footer is None:
+              footers = breaking_footers(body)
+              if not BREAKING_SUBJECT.match(subject) and not footers:
                   continue
               sha, summary = sha.strip(), CONVENTIONAL_PREFIX.sub("", subject)
               item = f"- {summary} ({sha})"
-              if footer:
-                  # Keep continuation lines' relative indentation (e.g. a YAML example), indented under the bullet.
-                  rest = textwrap.dedent("\n".join(footer[1:])).strip("\n").splitlines()
-                  item += f": {footer[0]}".rstrip() + "".join(f"\n  {line}" if line.strip() else "\n" for line in rest)
+              if len(footers) == 1:
+                  item += f": {footer_text(footers[0], '  ')}".rstrip()
+              elif footers:
+                  # Several BREAKING CHANGE footers in one commit: one sub-bullet each.
+                  item += ":" + "".join(f"\n  - {footer_text(value, '    ')}".rstrip() for value in footers)
               breaking_changes.append((sha, summary, item))
           if breaking_changes:
               print(f"Detected {len(breaking_changes)} breaking change(s) from commit markers.")
