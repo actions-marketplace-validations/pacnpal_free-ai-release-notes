@@ -356,8 +356,27 @@ def call_openrouter(use_json_mode):
     if data.get("error"):
         raise RuntimeError(f"OpenRouter error: {data['error']}")
     choice = (data.get("choices") or [{}])[0]
-    title, notes = parse_response((choice.get("message") or {}).get("content"))
+    content = (choice.get("message") or {}).get("content")
+    try:
+        title, notes = parse_response(content)
+    except ValueError as exc:
+        raise ValueError(f"{exc} ({describe_response(data, choice, content)})") from None
     return title, notes, data.get("model", "")
+
+
+def describe_response(data, choice, content):
+    """Why an answer was unusable, from response metadata only (never the model's text)."""
+    usage = data.get("usage") or {}
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+    parts = [
+        f"model {data.get('model') or 'unknown'}",
+        f"finish_reason {choice.get('finish_reason') or 'unknown'}",
+        f"{len(content or '')} characters of text",
+    ]
+    if usage.get("completion_tokens") is not None:
+        parts.append(f"{usage['completion_tokens']} completion tokens"
+                     + (f", {reasoning} of them reasoning" if reasoning else ""))
+    return re.sub(r"[^\w .,:/()-]", "", ", ".join(parts))  # no workflow-command characters
 
 
 ai_title = ai_notes = used_model = ""
