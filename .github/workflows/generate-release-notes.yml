@@ -469,7 +469,7 @@ jobs:
 
               If none exists but commits flagged breaking changes, add one.
               """
-              blocks = [[0, False, []]]  # [heading level, is breaking, lines]
+              blocks = [[0, False, [], None]]  # [heading level, is breaking, lines, index of first sub-heading]
               fence = None  # (character, length) of the open code fence
               last_markdown_level = 0  # level of the most recent "#" heading
               for line in markdown.splitlines():
@@ -495,8 +495,10 @@ jobs:
                       level = last_markdown_level + 1 if last_markdown_level else 3
                   current = blocks[-1]
                   if heading and not (current[1] and level > current[0]):
-                      blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line]])
+                      blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line], None])
                   else:
+                      if heading and current[3] is None:
+                          current[3] = len(current[2])  # a sub-heading kept inside a breaking section
                       current[2].append(line)
 
               def join(selected):
@@ -512,11 +514,14 @@ jobs:
                       if sha not in section and summary.lower() not in section.lower()
                   ]
                   if missing:
-                      # Insert after the first breaking section's own bullets, before any sub-heading.
+                      # Insert after the first breaking section's own bullets, before any sub-heading
+                      # (found by the fence-aware parse above, so never inside a code block).
                       first = breaking[0][2]
-                      at = next((i for i, l in enumerate(first) if i and re.match(r"^(#{1,6}\s|\*\*.+\*\*:?\s*$)", l)), len(first))
+                      at = breaking[0][3] if breaking[0][3] is not None else len(first)
                       while at > 1 and not first[at - 1].strip():
                           at -= 1
+                      if not first[at - 1].lstrip().startswith(("- ", "* ", "#", "**")):
+                          missing = [""] + missing  # e.g. after a code block: start a new list
                       first[at:at] = missing
                   top = join(breaking)
               elif breaking_text:
@@ -547,7 +552,8 @@ jobs:
 
           if len(notes) >= GITHUB_BODY_LIMIT:  # the notes file adds a trailing newline
               # GitHub rejects release bodies over 125,000 characters. Breaking changes are at the top, so they survive.
-              note = "\n\n_Release notes truncated to fit GitHub's size limit._" + (f"\n\n{compare_link}" if compare_link else "")
+              link = compare_link if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK") else ""
+              note = "\n\n_Release notes truncated to fit GitHub's size limit._" + (f"\n\n{link}" if link else "")
               notes = notes[: GITHUB_BODY_LIMIT - 1 - len(note)].rsplit("\n", 1)[0] + note
               log("warning", "Release notes exceeded GitHub's 125,000-character limit and were truncated.")
 
