@@ -27,7 +27,7 @@ on:
         type: string
         default: ''
       model:
-        description: OpenRouter model ID.
+        description: "OpenRouter model ID to use, e.g. `anthropic/claude-sonnet-4.5`. Defaults to the free models router. List several, separated by commas or new lines, to fall back in order when one fails or you run out of credits, e.g. `anthropic/claude-sonnet-4.5, openrouter/free`. Empty means `openrouter/free`."
         type: string
         default: openrouter/free
       instructions:
@@ -174,6 +174,7 @@ jobs:
           import re
           import subprocess
           import sys
+          import textwrap
           import time
           import urllib.error
           import urllib.request
@@ -256,6 +257,96 @@ jobs:
           if total_commits > len(commit_lines):
               commits_text += f"\n... and {total_commits - len(commit_lines)} older commits not shown"
 
+          # Breaking changes flagged with Conventional Commits markers ("feat!:",
+          # "fix(api)!:" or a "BREAKING CHANGE:" footer), across the whole range.
+          BREAKING_SUBJECT = re.compile(r"^[A-Za-z]+(?:\([^)]*\))?!:\s*")
+          CONVENTIONAL_PREFIX = re.compile(r"^[A-Za-z]+(?:\([^)]*\))?!?:\s*")
+          BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGES?:\s*(.*)$")
+          # Any Conventional Commits / git trailer token, which ends a multi-line footer value.
+          FOOTER_TOKEN = re.compile(r"^(?:BREAKING[ -]CHANGES?|[A-Za-z][\w-]*)(?::\s|\s#)")
+
+
+          def fence_step(text, fence):
+              """Return the code-fence state after one line: None outside a fence, else (character, length).
+
+              A block opens with ``` or ~~~ and closes only with the same character, at least as many
+              of them, and nothing after. A backtick run followed by more backticks is inline code.
+              """
+              run = re.match(r"^\s*(`{3,}|~{3,})(.*)$", text)
+              if run and run.group(1)[0] == "`" and "`" in run.group(2):
+                  run = None
+              if run and fence is None:
+                  return (run.group(1)[0], len(run.group(1)))
+              if run and fence and run.group(1)[0] == fence[0] and len(run.group(1)) >= fence[1] and not run.group(2).strip():
+                  return None
+              return fence
+
+
+          def breaking_footers(body):
+              """Return every BREAKING CHANGE footer in a commit body, each as a list of lines
+              (continuation lines included; [""] for an empty footer). Footer-like lines inside
+              code blocks, e.g. a documented example, are ignored."""
+              lines = body.splitlines()
+              footers = []
+              fence = None
+              i = 0
+              while i < len(lines):
+                  line = lines[i]
+                  i += 1
+                  match = None if fence else BREAKING_FOOTER.match(line)
+                  if not match:
+                      fence = fence_step(line, fence)
+                      continue
+                  value = [match.group(1).strip()]
+                  inner = fence_step(value[0], None)  # the footer may open a block itself: BREAKING CHANGE: ```yaml
+                  while i < len(lines):
+                      following = lines[i]
+                      if inner is None and FOOTER_TOKEN.match(following):
+                          break  # the next footer (possibly another BREAKING CHANGE) starts here
+                      inner = fence_step(following, inner)  # inside a block, "key: value" lines are content
+                      value.append(following.rstrip())
+                      i += 1
+                  while len(value) > 1 and not value[-1].strip():
+                      value.pop()
+                  footers.append(value)
+              return footers
+
+
+          def footer_text(value, indent):
+              """First line, then continuation lines with their relative indentation, indented under it.
+              A footer whose first line opens a code block starts the block on its own line."""
+              if re.match(r"^(`{3,}|~{3,})", value[0]):
+                  value = ["", *value]
+              rest = textwrap.dedent("\n".join(value[1:])).strip("\n").splitlines()
+              return value[0] + "".join(f"\n{indent}{line}" if line.strip() else "\n" for line in rest)
+
+
+          breaking_changes = []  # (short sha, subject without type prefix, Markdown bullet)
+          raw_breaking = git(
+              "log", "--no-merges", "-E",
+              "--grep=^[A-Za-z]+(\\([^)]*\\))?!:", "--grep=^BREAKING[ -]CHANGES?:",
+              "--format=%x1e%h%x1f%s%x1f%b", rev_range,
+          )
+          for entry in filter(None, raw_breaking.split("\x1e")):
+              sha, subject, body = (entry.split("\x1f") + ["", "", ""])[:3]
+              subject = subject.strip()
+              footers = breaking_footers(body)
+              if not BREAKING_SUBJECT.match(subject) and not footers:
+                  continue
+              sha, summary = sha.strip(), CONVENTIONAL_PREFIX.sub("", subject)
+              item = f"- {summary} ({sha})"
+              described = [value for value in footers if any(line.strip() for line in value)]  # skip empty footers
+              if len(described) == 1:
+                  text = footer_text(described[0], "  ").rstrip()
+                  item += ":" + (text if text.startswith("\n") else f" {text}")
+              elif described:
+                  # Several BREAKING CHANGE footers in one commit: one sub-bullet each.
+                  item += ":" + "".join(f"\n  - {footer_text(value, '    ')}".rstrip() for value in described)
+              breaking_changes.append((sha, summary, item))
+          if breaking_changes:
+              print(f"Detected {len(breaking_changes)} breaking change(s) from commit markers.")
+          breaking_text = "\n".join(item for _, _, item in breaking_changes)
+
           diffstat = git("diff", "--stat=120", f"{previous_tag}..{head_sha}", check=False) if previous_tag else ""
           stat_lines = diffstat.splitlines()
           if len(stat_lines) > 80:
@@ -283,12 +374,19 @@ jobs:
                   print(f"GitHub generated notes unavailable ({exc}); continuing with git history only.")
 
           budget = env_num("IN_MAX_INPUT_CHARS", 60000)
+          context_parts = []
+          if breaking_text:
+              # Every flagged breaking change is mandatory, so this list is always sent in full and
+              # max-input-chars applies to the rest of the context.
+              context_parts.append(
+                  "## Breaking changes flagged in commit messages (every one MUST be listed under ⚠️ Breaking Changes)\n"
+                  + breaking_text
+              )
           sections = [
               ("GitHub generated notes (merged pull requests and contributors)", github_notes),
               ("Files changed", diffstat),
               ("Commits (newest first)", commits_text),
           ]
-          context_parts = []
           for heading, body in sections:
               if not body:
                   continue
@@ -301,12 +399,41 @@ jobs:
                   break
 
           # -------------------------------------------------------------- prompt
-          system_prompt = """You write release notes for software projects from git history.
-          Respond with ONLY a JSON object, without code fences, of the form {"title": string, "notes": string}.
+          system_prompt = """You are a release notes writer. You turn git history into release notes for the people who use the software.
+          Respond with ONLY a JSON object, without code fences or any other text, of the form {"title": string, "notes": string}.
 
           "title": a short, human-friendly release title (at most 60 characters) that captures the main theme of the release. Do not include the version number. No trailing period. No emoji.
 
-          "notes": GitHub-flavored Markdown. Start with a 1-3 sentence summary of the release. Then group the changes under level-3 headings chosen from this list, in this order, leaving out any that would be empty: "⚠️ Breaking Changes", "✨ New Features", "🐛 Bug Fixes", "⚡ Performance", "📚 Documentation", "🔧 Maintenance". Write each change as one concise, user-facing bullet and merge related commits into a single bullet. Keep pull request references (#123) and @mentions exactly as they appear in the input. Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed. Never invent changes that the input does not support. Do not add a top-level heading, the version number, or a "Full Changelog" link."""
+          "notes": GitHub-flavored Markdown that follows the rules below EXACTLY.
+
+          BREAKING CHANGES ALWAYS COME FIRST. THIS RULE OVERRIDES EVERY OTHER RULE.
+          - A breaking change is any change that forces users to change their code, configuration, scripts or workflows when they upgrade: removed or renamed APIs, options, commands, flags, files or settings; changed defaults or behaviour; newly required configuration; dropped platform, runtime or version support.
+          - Every item listed under "Breaking changes flagged in commit messages" IS a breaking change. You MUST include EVERY one of them. Never skip, merge away or downplay any of them, even if the change looks small or the input was truncated.
+          - If there is at least one breaking change, the VERY FIRST LINE of "notes" MUST be exactly: ### ⚠️ Breaking Changes
+          - Nothing may come before that heading: no summary, no title, no other heading, no blank line.
+          - Under that heading, write one bullet per breaking change. Each bullet MUST say what changed AND what users must do to upgrade. End the bullet of every flagged change with its short commit hash in parentheses, e.g. (a1b2c3d).
+          - Breaking changes MUST NOT appear under any other heading or anywhere else in the notes.
+          - If there are no breaking changes, leave the section out entirely. Never write "None" or an empty section.
+
+          After the breaking changes (or first, if there are none):
+          1. A 1-3 sentence summary of the release, as plain text with no heading.
+          2. The remaining changes grouped under these level-3 headings, in this order, leaving out any that would be empty: "### ✨ New Features", "### 🐛 Bug Fixes", "### ⚡ Performance", "### 📚 Documentation", "### 🔧 Maintenance".
+
+          Other rules:
+          - Write one concise, user-facing bullet per change and merge related commits into a single bullet.
+          - Keep pull request references (#123) and @mentions exactly as they appear in the input.
+          - Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed.
+          - Never invent changes that the input does not support.
+          - Do not add a top-level heading, the version number, or a "Full Changelog" link.
+
+          Layout when there are breaking changes:
+          ### ⚠️ Breaking Changes
+          - <what changed>. <what users must do to upgrade>. (<commit hash>)
+
+          <summary>
+
+          ### ✨ New Features
+          - <change>"""
           system_prompt = "\n".join(line.strip() for line in system_prompt.splitlines())
 
           user_prompt = "\n\n".join(
@@ -317,6 +444,9 @@ jobs:
                   f"Commits in this release: {total_commits}",
                   *([f"Additional instructions from the maintainers:\n{env('IN_INSTRUCTIONS')}"] if env("IN_INSTRUCTIONS") else []),
                   *context_parts,
+                  *([f"REMINDER: this release has {len(breaking_changes)} flagged breaking change(s). \"notes\" MUST start "
+                     "with the line ### ⚠️ Breaking Changes and list EVERY one of them first, each ending with its "
+                     "commit hash."] if breaking_changes else []),
               ]
           )
 
@@ -341,9 +471,14 @@ jobs:
               return title[:100], notes
 
 
+          FREE_ROUTER = "openrouter/free"
+          models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or [FREE_ROUTER]
+          print(f"Model{'s' if len(models) > 1 else ''}: {', '.join(models)}")
+
+
           def call_openrouter(use_json_mode):
               body = {
-                  "model": env("IN_MODEL") or "openrouter/free",
+                  "model": models[0],
                   "messages": [
                       {"role": "system", "content": system_prompt},
                       {"role": "user", "content": user_prompt},
@@ -352,6 +487,8 @@ jobs:
                   "max_tokens": env_num("IN_MAX_TOKENS", 4096),
                   "reasoning": {"exclude": True},
               }
+              if len(models) > 1:
+                  body["models"] = models[1:]  # OpenRouter tries these in order if the first fails
               if use_json_mode:
                   body["response_format"] = {"type": "json_object"}
               req = urllib.request.Request(
@@ -383,9 +520,36 @@ jobs:
                   print(f"Generated notes with {used_model or 'unknown model'} on attempt {attempt}.")
                   break
               except urllib.error.HTTPError as exc:
-                  detail = exc.read().decode(errors="replace")[:500]
+                  body_text = exc.read().decode(errors="replace")
+                  detail = body_text[:500]
                   if exc.code == 401:
                       sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
+                  if exc.code == 402:
+                      try:
+                          metadata = (json.loads(body_text).get("error") or {}).get("metadata") or {}
+                      except (ValueError, AttributeError):
+                          metadata = {}
+                      if metadata.get("limit_source") == "openrouter_in_flight_budget":
+                          # A temporary hold while recent paid requests settle: wait for Retry-After and retry.
+                          try:
+                              wait = min(max(float(exc.headers.get("Retry-After", "")), 1.0), 120.0)
+                          except ValueError:
+                              wait = min(5 * 2 ** (attempt - 1), 60)
+                          retrying = f"retrying in {wait:.0f}s" if attempt < attempts else "no attempts left"
+                          log("warning", f"Attempt {attempt}/{attempts}: OpenRouter's in-flight spending budget is "
+                              f"temporarily full (HTTP 402); {retrying}.")
+                          if attempt < attempts:
+                              time.sleep(wait)
+                          continue
+                      # Out of credits or a request too large for the budget: retrying won't help.
+                      # A negative balance also blocks free models.
+                      hint = metadata.get("remedy_hint") or (
+                          "Your OpenRouter balance may be negative, which blocks free models too; add credits."
+                          if FREE_ROUTER in models or all(m.endswith(":free") for m in models)
+                          else f"Add credits, or add {FREE_ROUTER} as a fallback in the `model` input to stay free."
+                      )
+                      log("warning", f"OpenRouter returned HTTP 402 (insufficient credits) for {', '.join(models)}. {hint} Detail: {detail}")
+                      break
                   if exc.code == 400 and use_json_mode:
                       use_json_mode = False
                   log("warning", f"Attempt {attempt}/{attempts}: OpenRouter returned HTTP {exc.code}: {detail}")
@@ -395,10 +559,16 @@ jobs:
                   time.sleep(min(5 * 2 ** (attempt - 1), 60))
 
           # -------------------------------------------------------------- output
+          GITHUB_BODY_LIMIT = 125000
+
           compare_link = f"**Full Changelog**: {server}/{repo}/compare/{previous_tag}...{tag}" if previous_tag else ""
           if ai_notes:
               title = env("IN_TITLE_TEMPLATE", "{tag}: {title}").replace("{tag}", tag).replace("{title}", ai_title)
               notes = ai_notes
+              # The model places breaking changes itself; only report flagged commits it didn't mention.
+              unmentioned = [sha for sha, _, _ in breaking_changes if sha not in ai_notes]
+              if unmentioned:
+                  log("warning", f"The model's notes don't mention flagged breaking commit(s) {', '.join(unmentioned)} by hash.")
               if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
                   notes += f"\n\n{compare_link}"
           else:
@@ -412,6 +582,15 @@ jobs:
                   notes = "## What's Changed\n" + "\n".join(line.splitlines()[0] for line in commit_lines)
                   if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
                       notes += f"\n\n{compare_link}"
+              if breaking_text:
+                  notes = f"### ⚠️ Breaking Changes\n{breaking_text}\n\n{notes}"
+
+          if len(notes) >= GITHUB_BODY_LIMIT:  # the notes file adds a trailing newline
+              # GitHub rejects release bodies over 125,000 characters. Breaking changes come first, so they survive.
+              link = compare_link if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK") else ""
+              note = "\n\n_Release notes truncated to fit GitHub's size limit._" + (f"\n\n{link}" if link else "")
+              notes = notes[: GITHUB_BODY_LIMIT - 1 - len(note)].rsplit("\n", 1)[0] + note
+              log("warning", "Release notes exceeded GitHub's 125,000-character limit and were truncated.")
 
           notes_file = os.path.join(env("RUNNER_TEMP") or ".", "release-notes.md")
           with open(notes_file, "w", encoding="utf-8") as fh:
