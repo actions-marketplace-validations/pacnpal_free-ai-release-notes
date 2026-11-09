@@ -27,7 +27,7 @@ on:
         type: string
         default: ''
       model:
-        description: OpenRouter model ID.
+        description: "OpenRouter model ID to use, e.g. `anthropic/claude-sonnet-4.5`. Defaults to the free models router. List several, separated by commas or new lines, to fall back in order when one fails or you run out of credits, e.g. `anthropic/claude-sonnet-4.5, openrouter/free`. Empty means `openrouter/free`."
         type: string
         default: openrouter/free
       instructions:
@@ -256,6 +256,31 @@ jobs:
           if total_commits > len(commit_lines):
               commits_text += f"\n... and {total_commits - len(commit_lines)} older commits not shown"
 
+          # Breaking changes flagged with Conventional Commits markers ("feat!:",
+          # "fix(api)!:" or a "BREAKING CHANGE:" footer), across the whole range.
+          BREAKING_SUBJECT = re.compile(r"^[A-Za-z]+(?:\([^)]*\))?!:\s*")
+          CONVENTIONAL_PREFIX = re.compile(r"^[A-Za-z]+(?:\([^)]*\))?!?:\s*")
+          BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGES?:\s*(.*)", re.M)
+          breaking_changes = []
+          raw_breaking = git(
+              "log", "--no-merges", "-E",
+              "--grep=^[A-Za-z]+(\\([^)]*\\))?!:", "--grep=^BREAKING[ -]CHANGES?:",
+              "--format=%x1e%h%x1f%s%x1f%b", rev_range,
+          )
+          for entry in filter(None, raw_breaking.split("\x1e")):
+              sha, subject, body = (entry.split("\x1f") + ["", "", ""])[:3]
+              subject = subject.strip()
+              footer = BREAKING_FOOTER.search(body)
+              if not BREAKING_SUBJECT.match(subject) and not footer:
+                  continue
+              item = f"- {CONVENTIONAL_PREFIX.sub('', subject)} ({sha.strip()})"
+              if footer and footer.group(1).strip():
+                  item += f": {footer.group(1).strip()}"
+              breaking_changes.append(item)
+          if breaking_changes:
+              print(f"Detected {len(breaking_changes)} breaking change(s) from commit markers.")
+          breaking_text = "\n".join(breaking_changes)
+
           diffstat = git("diff", "--stat=120", f"{previous_tag}..{head_sha}", check=False) if previous_tag else ""
           stat_lines = diffstat.splitlines()
           if len(stat_lines) > 80:
@@ -284,6 +309,7 @@ jobs:
 
           budget = env_num("IN_MAX_INPUT_CHARS", 60000)
           sections = [
+              ("Breaking changes flagged in commit messages (every one MUST be listed under ⚠️ Breaking Changes)", breaking_text),
               ("GitHub generated notes (merged pull requests and contributors)", github_notes),
               ("Files changed", diffstat),
               ("Commits (newest first)", commits_text),
@@ -306,7 +332,7 @@ jobs:
 
           "title": a short, human-friendly release title (at most 60 characters) that captures the main theme of the release. Do not include the version number. No trailing period. No emoji.
 
-          "notes": GitHub-flavored Markdown. Start with a 1-3 sentence summary of the release. Then group the changes under level-3 headings chosen from this list, in this order, leaving out any that would be empty: "⚠️ Breaking Changes", "✨ New Features", "🐛 Bug Fixes", "⚡ Performance", "📚 Documentation", "🔧 Maintenance". Write each change as one concise, user-facing bullet and merge related commits into a single bullet. Keep pull request references (#123) and @mentions exactly as they appear in the input. Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed. Never invent changes that the input does not support. Do not add a top-level heading, the version number, or a "Full Changelog" link."""
+          "notes": GitHub-flavored Markdown. If the release has any breaking changes (changes that require users to modify code, configuration or workflows when upgrading: removed or renamed APIs, options or commands, changed defaults or behaviour, dropped platform support), the notes MUST begin with a level-3 "⚠️ Breaking Changes" section, before anything else, listing each one with what users need to do to upgrade. Every change listed in the input as a flagged breaking change is breaking. Next, write a 1-3 sentence summary of the release. Then group the remaining changes under level-3 headings chosen from this list, in this order, leaving out any that would be empty: "✨ New Features", "🐛 Bug Fixes", "⚡ Performance", "📚 Documentation", "🔧 Maintenance". Write each change as one concise, user-facing bullet and merge related commits into a single bullet. Keep pull request references (#123) and @mentions exactly as they appear in the input. Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed. Never invent changes that the input does not support. Do not add a top-level heading, the version number, or a "Full Changelog" link."""
           system_prompt = "\n".join(line.strip() for line in system_prompt.splitlines())
 
           user_prompt = "\n\n".join(
@@ -341,9 +367,14 @@ jobs:
               return title[:100], notes
 
 
+          FREE_ROUTER = "openrouter/free"
+          models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or [FREE_ROUTER]
+          print(f"Model{'s' if len(models) > 1 else ''}: {', '.join(models)}")
+
+
           def call_openrouter(use_json_mode):
               body = {
-                  "model": env("IN_MODEL") or "openrouter/free",
+                  "model": models[0],
                   "messages": [
                       {"role": "system", "content": system_prompt},
                       {"role": "user", "content": user_prompt},
@@ -352,6 +383,8 @@ jobs:
                   "max_tokens": env_num("IN_MAX_TOKENS", 4096),
                   "reasoning": {"exclude": True},
               }
+              if len(models) > 1:
+                  body["models"] = models[1:]  # OpenRouter tries these in order if the first fails
               if use_json_mode:
                   body["response_format"] = {"type": "json_object"}
               req = urllib.request.Request(
@@ -386,6 +419,9 @@ jobs:
                   detail = exc.read().decode(errors="replace")[:500]
                   if exc.code == 401:
                       sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
+                  if exc.code == 402:
+                      log("warning", f"OpenRouter returned HTTP 402: not enough credits for {', '.join(models)}. "
+                          f"Add credits, or add {FREE_ROUTER} as a fallback in the `model` input to stay free.")
                   if exc.code == 400 and use_json_mode:
                       use_json_mode = False
                   log("warning", f"Attempt {attempt}/{attempts}: OpenRouter returned HTTP {exc.code}: {detail}")
@@ -395,10 +431,49 @@ jobs:
                   time.sleep(min(5 * 2 ** (attempt - 1), 60))
 
           # -------------------------------------------------------------- output
+          BREAKING_HEADING = re.compile(r"(?<!non-)(?<!non )\bbreaking\b", re.I)
+
+
+          def breaking_first(markdown):
+              """Move every "Breaking" section (with its sub-sections) to the top.
+
+              If none exists but commits flagged breaking changes, add one.
+              """
+              blocks = [[0, False, []]]  # [heading level, is breaking, lines]
+              in_fence = False
+              for line in markdown.splitlines():
+                  if line.lstrip().startswith(("```", "~~~")):
+                      in_fence = not in_fence
+                  # Markdown headings, plus whole-line bold text used as a heading.
+                  heading = None if in_fence else (
+                      re.match(r"^(#{1,6})\s+(.*)$", line) or re.match(r"^(\*\*)(.+?)\*\*:?\s*$", line)
+                  )
+                  level = (len(heading.group(1)) if heading.group(1).startswith("#") else 6) if heading else 0
+                  current = blocks[-1]
+                  if heading and not (current[1] and level > current[0]):
+                      blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line]])
+                  else:
+                      current[2].append(line)
+
+              def join(selected):
+                  texts = ("\n".join(b[2]).strip("\n") for b in selected)
+                  return "\n\n".join(t for t in texts if t.strip())
+
+              breaking = [b for b in blocks if b[1]]
+              rest = join(b for b in blocks if not b[1])
+              if breaking:
+                  top = join(breaking)
+              elif breaking_text:
+                  top = f"### ⚠️ Breaking Changes\n{breaking_text}"
+              else:
+                  return markdown
+              return f"{top}\n\n{rest}".strip()
+
+
           compare_link = f"**Full Changelog**: {server}/{repo}/compare/{previous_tag}...{tag}" if previous_tag else ""
           if ai_notes:
               title = env("IN_TITLE_TEMPLATE", "{tag}: {title}").replace("{tag}", tag).replace("{title}", ai_title)
-              notes = ai_notes
+              notes = breaking_first(ai_notes)
               if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
                   notes += f"\n\n{compare_link}"
           else:
@@ -412,6 +487,7 @@ jobs:
                   notes = "## What's Changed\n" + "\n".join(line.splitlines()[0] for line in commit_lines)
                   if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
                       notes += f"\n\n{compare_link}"
+              notes = breaking_first(notes)
 
           notes_file = os.path.join(env("RUNNER_TEMP") or ".", "release-notes.md")
           with open(notes_file, "w", encoding="utf-8") as fh:

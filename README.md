@@ -1,11 +1,14 @@
 # free-ai-release-notes
 
-A reusable GitHub Actions workflow that writes your release **titles** and **release notes** with AI, for free, using OpenRouter's [free models router](https://openrouter.ai/openrouter/free) (`openrouter/free`).
+A reusable GitHub Actions workflow that writes your release **titles** and **release notes** with AI, for free, using OpenRouter's [free models router](https://openrouter.ai/openrouter/free) (`openrouter/free`). Prefer a specific model? [Bring your own](#choosing-a-model), with the free router as a fallback.
 
-It reads the commits (and, when allowed, the merged pull requests) between the previous tag and the new one, asks a free model to summarise them into grouped, user-facing Markdown notes and a short title, and then either creates/updates the GitHub release for you or hands the title and notes to the rest of your workflow.
+It reads the commits (and, when allowed, the merged pull requests) between the previous tag and the new one, asks the model to summarise them into grouped, user-facing Markdown notes and a short title, and then either creates/updates the GitHub release for you or hands the title and notes to the rest of your workflow. [Breaking changes always come first.](#breaking-changes)
 
 ```text
 v1.4.0: Offline mode and faster sync
+
+### ⚠️ Breaking Changes
+- The `sync.legacy` option has been removed; delete it from your config (#141)
 
 This release adds offline support and makes syncing noticeably faster on large projects.
 
@@ -26,6 +29,8 @@ This release adds offline support and makes syncing noticeably faster on large p
 - [Quick start](#quick-start)
 - [Setting up OPENROUTER_API_KEY](#setting-up-openrouter_api_key)
 - [Usage examples](#usage-examples)
+- [Choosing a model](#choosing-a-model)
+- [Breaking changes](#breaking-changes)
 - [Inputs](#inputs)
 - [Outputs](#outputs)
 - [Permissions](#permissions)
@@ -214,6 +219,50 @@ Use `tag-pattern` so the previous tag is picked from the same series:
 
 or set `previous-tag` explicitly.
 
+## Choosing a model
+
+The default, `openrouter/free`, costs nothing: OpenRouter picks one of its free models for each request. To use a model you choose, set `model` to any [OpenRouter model ID](https://openrouter.ai/models):
+
+```yaml
+    with:
+      model: anthropic/claude-sonnet-4.5
+```
+
+Paid models are billed to your OpenRouter account and need credits on it.
+
+**Fallbacks.** List several models, separated by commas or new lines, and OpenRouter tries them in order when one fails (an error, downtime, rate limiting or no credits left). Ending the list with `openrouter/free` keeps releases going for free if your preferred model is unavailable:
+
+```yaml
+    with:
+      model: anthropic/claude-sonnet-4.5, openrouter/free
+```
+
+You're billed for whichever model actually answers; the `model` output says which one it was. To guarantee a release costs nothing, list only `openrouter/free` or models ending in `:free`.
+
+**Per-repository default without editing the workflow.** Read the model from a repository or organization [variable](https://docs.github.com/actions/learn-github-actions/variables) and fall back to the free router when it isn't set:
+
+```yaml
+    with:
+      model: ${{ vars.OPENROUTER_MODEL || 'openrouter/free' }}
+```
+
+```bash
+gh variable set OPENROUTER_MODEL --body "anthropic/claude-sonnet-4.5, openrouter/free"
+```
+
+An empty `model` also means `openrouter/free`.
+
+## Breaking changes
+
+Breaking changes are always the first thing in the notes, above the summary:
+
+- **Detected from commits.** Commits marked as breaking with [Conventional Commits](https://www.conventionalcommits.org/) (`feat!: ...`, `fix(api)!: ...`, or a `BREAKING CHANGE: ...` footer) are collected across the whole release range, even beyond `max-commits`, and handed to the model as changes it must list under **⚠️ Breaking Changes**, with what users need to do to upgrade.
+- **Recognised by the model.** The model is also told to treat removed or renamed APIs, options and commands, changed defaults, and dropped platform support as breaking, even without a marker.
+- **Enforced after generation.** Whatever the model writes, any section whose heading mentions "breaking" (with its subsections, e.g. a "Migration" heading) is moved to the very top. If the model left the section out but commits flagged breaking changes, the workflow adds the section itself from those commits.
+- **Kept in the fallback.** When AI generation fails, the fallback notes also start with a **⚠️ Breaking Changes** section built from the flagged commits.
+
+Marking breaking commits with `!` or `BREAKING CHANGE:` is the most reliable way to make sure nothing is missed.
+
 ## Inputs
 
 All inputs are optional.
@@ -224,7 +273,7 @@ All inputs are optional.
 | `previous-tag` | auto | Tag to compare against. Defaults to the closest tag reachable from the parent of the release commit. Empty on a first release (the whole history is used). |
 | `target` | `github.sha` | Commit-ish to release when `tag` doesn't exist yet. Ignored if the tag exists. |
 | `tag-pattern` | | Glob for picking the previous tag automatically (`git describe --match`), e.g. `v*`. |
-| `model` | `openrouter/free` | OpenRouter model ID. Any model works, including paid ones if your account has credits. |
+| `model` | `openrouter/free` | OpenRouter model ID, or several separated by commas/new lines to fall back in order. Empty means `openrouter/free`. See [Choosing a model](#choosing-a-model). |
 | `instructions` | | Extra instructions added to the prompt. |
 | `title-template` | `{tag}: {title}` | Release title format. `{tag}` is the tag, `{title}` the AI title. When the fallback is used, the title is just the tag. |
 | `max-commits` | `200` | Maximum commits sent to the model. |
@@ -255,7 +304,7 @@ All inputs are optional.
 | `notes` | Release notes in Markdown. |
 | `tag` | Tag the notes were generated for. |
 | `previous-tag` | Tag the changes were compared against (empty on a first release). |
-| `model` | The free model OpenRouter actually picked, e.g. `google/gemma-4-31b-it:free`. Empty when the fallback was used. |
+| `model` | The model that actually answered, e.g. `google/gemma-4-31b-it:free` when the free router picked it. Empty when the fallback was used. |
 | `ai-generated` | `'true'` if the notes came from the model, `'false'` if the fallback was used. |
 | `release-url` | URL of the created or updated release (only with `create-release: true`). |
 
@@ -274,10 +323,11 @@ The reusable workflow doesn't declare permissions; it runs with what the **calle
 1. **Checks** that `OPENROUTER_API_KEY` is set and stops with instructions if not.
 2. **Checks out** the calling repository with full history and tags.
 3. **Works out the range**: the release tag (or `target` if the tag isn't created yet) and the previous tag.
-4. **Collects context**: commit subjects and bodies (merges excluded, up to `max-commits`), a diffstat of changed files, and GitHub's generated notes when permitted, trimmed to `max-input-chars`.
-5. **Calls OpenRouter** (`openrouter/free` by default), which routes the request to a randomly chosen free model that supports the features asked for. The model is asked for JSON with a `title` and Markdown `notes` grouped into Breaking Changes, New Features, Bug Fixes, Performance, Documentation and Maintenance, and told not to invent changes. The answer is parsed defensively (code fences and `<think>` blocks are stripped) and validated.
+4. **Collects context**: commits flagged as breaking, commit subjects and bodies (merges excluded, up to `max-commits`), a diffstat of changed files, and GitHub's generated notes when permitted, trimmed to `max-input-chars`.
+5. **Calls OpenRouter** with the `model` input (`openrouter/free` by default, which routes the request to a randomly chosen free model that supports the features asked for), plus any fallback models you listed. The model is asked for JSON with a `title` and Markdown `notes`: Breaking Changes first, then a summary, then New Features, Bug Fixes, Performance, Documentation and Maintenance. It is told not to invent changes. The answer is parsed defensively (code fences and `<think>` blocks are stripped) and validated.
 6. **Retries** on rate limits, server errors and unusable answers with backoff (5s, 10s, 20s, ...). If a model rejects JSON mode, later attempts drop it.
-7. **Writes outputs** and a preview to the job summary, and with `create-release: true` creates the release (`gh release create`) or edits the existing one (`gh release edit`).
+7. **Puts breaking changes first**: see [Breaking changes](#breaking-changes).
+8. **Writes outputs** and a preview to the job summary, and with `create-release: true` creates the release (`gh release create`) or edits the existing one (`gh release edit`).
 
 Model output is never printed to the log or executed: it only goes to step outputs, a Markdown file and the job summary.
 
@@ -290,11 +340,11 @@ Because the router picks a different free model each time, quality and formattin
 - with `fail-on-error: false` (default) it **falls back** to GitHub's generated notes, or a plain commit list, with the tag as the title, emits a warning, and sets `ai-generated` to `false`; the release still goes out.
 - with `fail-on-error: true` the job fails.
 
-If you want consistent output, set `model` to a specific model, e.g. `google/gemma-4-31b-it:free`.
+If you want consistent output, set `model` to a specific model, e.g. `google/gemma-4-31b-it:free`, or a paid one with `openrouter/free` as a fallback (see [Choosing a model](#choosing-a-model)).
 
 ## Privacy
 
-Commit messages, changed file names and PR titles from the release range are sent to OpenRouter and the free model provider it chooses. Some free providers log prompts or may use them for training, which OpenRouter lets you control in your [privacy settings](https://openrouter.ai/settings/privacy). Don't use this on repositories whose commit history must not leave GitHub.
+Commit messages, changed file names and PR titles from the release range are sent to OpenRouter and the model provider that serves the request. Some free providers log prompts or may use them for training, which OpenRouter lets you control in your [privacy settings](https://openrouter.ai/settings/privacy). Don't use this on repositories whose commit history must not leave GitHub.
 
 ## Troubleshooting
 
@@ -303,10 +353,12 @@ Commit messages, changed file names and PR titles from the release range are sen
 | `OPENROUTER_API_KEY is not set` | Add the secret to this repository and pass it under `secrets:` (or `secrets: inherit`). Secrets aren't available to workflows triggered from forks. |
 | `OpenRouter rejected OPENROUTER_API_KEY (HTTP 401)` | The key is wrong or revoked; create a new one and update the secret. |
 | Warnings with HTTP `404` "No endpoints found matching your data policy" | Your OpenRouter privacy settings exclude every free provider. Allow free endpoints in [privacy settings](https://openrouter.ai/settings/privacy). |
+| Warnings with HTTP `402` | No credits left for the paid model you chose. Add credits, or add `openrouter/free` as a fallback in `model`. |
 | Warnings with HTTP `429` | Free-tier rate limit. Raise `retries`, or wait; the fallback still publishes the release. |
 | `No tag to release` | The caller didn't run on a tag. Pass `tag:`. |
 | `Resource not accessible by integration` when creating the release | The caller needs `permissions: contents: write`. |
 | Notes compare against the wrong tag | Set `tag-pattern` or `previous-tag`. |
+| A breaking change isn't listed | Mark the commit with `!` (e.g. `feat!: ...`) or a `BREAKING CHANGE:` footer; flagged commits are always listed. |
 | `ai-generated` is `false` | All attempts failed; the job's warnings say why. |
 
 ## Pinning a version
