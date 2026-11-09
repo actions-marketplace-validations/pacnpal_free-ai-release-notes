@@ -274,11 +274,16 @@ jobs:
                   if not match:
                       continue
                   value = [match.group(1).strip()]
-                  in_code = False  # inside a ``` or ~~~ block, "key: value" lines are content, not footer tokens
+                  # Inside a ``` or ~~~ block, "key: value" lines are content, not footer tokens. A block
+                  # closes only with the same character, at least as many of them, and nothing after.
+                  fence = None
                   for following in lines[i + 1 :]:
-                      if re.match(r"^\s*(```|~~~)", following):
-                          in_code = not in_code
-                      elif not in_code and FOOTER_TOKEN.match(following):
+                      run = re.match(r"^\s*(`{3,}|~{3,})(.*)$", following)
+                      if run and fence is None:
+                          fence = (run.group(1)[0], len(run.group(1)))
+                      elif run and fence and run.group(1)[0] == fence[0] and len(run.group(1)) >= fence[1] and not run.group(2).strip():
+                          fence = None
+                      elif fence is None and FOOTER_TOKEN.match(following):
                           break
                       value.append(following.rstrip())
                   while value and not value[-1].strip():
