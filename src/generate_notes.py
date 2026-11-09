@@ -47,7 +47,9 @@ def set_output(name, value):
 
 
 def log(level, message):
-    # Keep model output out of the log: it could contain workflow commands.
+    # Keep model output out of the log: it could contain workflow commands. Messages can still carry
+    # API error text, so escape them as command data: a newline must not start a new command.
+    message = str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     print(f"::{level}::{message}", flush=True)
 
 
@@ -321,11 +323,19 @@ def parse_response(content):
 
 
 FREE_ROUTER = "openrouter/free"
-models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or [FREE_ROUTER]
+# The default when `model` is empty. These answered every test request; the free router comes last
+# in case both are busy.
+DEFAULT_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b:free", "nvidia/nemotron-3.5-super-vl:free", FREE_ROUTER]
+models = [m.strip() for m in re.split(r"[,\n]", env("IN_MODEL")) if m.strip()] or list(DEFAULT_MODELS)
 print(f"Model{'s' if len(models) > 1 else ''}: {', '.join(models)}")
+# Every free model on OpenRouter is a reasoning model, and their reasoning counts against max_tokens.
+def all_free():
+    # Checked per request: dropping an unknown model can leave only free ones.
+    return all(m == FREE_ROUTER or m.endswith(":free") for m in models)
 
 
 def call_openrouter(use_json_mode):
+    free = all_free()
     body = {
         "model": models[0],
         "messages": [
@@ -333,9 +343,15 @@ def call_openrouter(use_json_mode):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": env_num("IN_TEMPERATURE", 0.3, float),
-        "max_tokens": env_num("IN_MAX_TOKENS", 4096),
+        # Free models need room to reason. Paid requests hold their max_tokens cost against the
+        # account up front, so they keep a smaller budget unless `max-tokens` says otherwise.
+        "max_tokens": env_num("IN_MAX_TOKENS", 16384 if free else 4096),
         "reasoning": {"exclude": True},
     }
+    if free:
+        # Keep reasoning short so it leaves room for the answer. Not sent for paid models: on
+        # Claude, for example, an effort turns extended thinking on.
+        body["reasoning"]["effort"] = "low"
     if len(models) > 1:
         body["models"] = models[1:]  # OpenRouter tries these in order if the first fails
     if use_json_mode:
@@ -356,14 +372,38 @@ def call_openrouter(use_json_mode):
     if data.get("error"):
         raise RuntimeError(f"OpenRouter error: {data['error']}")
     choice = (data.get("choices") or [{}])[0]
-    title, notes = parse_response((choice.get("message") or {}).get("content"))
+    content = (choice.get("message") or {}).get("content")
+    try:
+        title, notes = parse_response(content)
+    except ValueError as exc:
+        reason = describe_response(data, choice, content)
+        if choice.get("finish_reason") == "length":
+            raise ValueError(f"the model ran out of max-tokens before finishing its answer ({reason})") from None
+        raise ValueError(f"{exc} ({reason})") from None
     return title, notes, data.get("model", "")
+
+
+def describe_response(data, choice, content):
+    """Why an answer was unusable, from response metadata only (never the model's text)."""
+    usage = data.get("usage") or {}
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+    parts = [
+        f"model {data.get('model') or 'unknown'}",
+        f"finish_reason {choice.get('finish_reason') or 'unknown'}",
+        f"{len(content or '')} characters of text",
+    ]
+    if usage.get("completion_tokens") is not None:
+        parts.append(f"{usage['completion_tokens']} completion tokens"
+                     + (f", {reasoning} of them reasoning" if reasoning else ""))
+    return re.sub(r"[^\w .,:/()-]", "", ", ".join(parts))  # no workflow-command characters
 
 
 ai_title = ai_notes = used_model = ""
 attempts = max(env_num("IN_RETRIES", 3), 1)
 use_json_mode = True
-for attempt in range(1, attempts + 1):
+attempt = 0
+while attempt < attempts:
+    attempt += 1
     try:
         ai_title, ai_notes, used_model = call_openrouter(use_json_mode)
         print(f"Generated notes with {used_model or 'unknown model'} on attempt {attempt}.")
@@ -373,11 +413,25 @@ for attempt in range(1, attempts + 1):
         detail = body_text[:500]
         if exc.code == 401:
             sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
+        try:
+            error = json.loads(body_text).get("error") or {}
+        except (ValueError, AttributeError):
+            error = {}
+        metadata = error.get("metadata") or {} if isinstance(error, dict) else {}
+        unknown = re.match(r"(\S+) is not a valid model ID", str(error.get("message", "")) if isinstance(error, dict) else "")
+        if exc.code == 400 and unknown and unknown.group(1) in models and len(models) > 1:
+            # One unknown model rejects the whole request, fallbacks included (e.g. a free model
+            # that was retired). Drop it and try the rest without using up an attempt.
+            models.remove(unknown.group(1))
+            log("warning", f"OpenRouter doesn't know the model {unknown.group(1)}; trying {', '.join(models)}.")
+            attempt -= 1
+            continue
+        if exc.code == 429 and metadata.get("limit_source") == "openrouter_free_tier_daily":
+            # The daily cap on free-model requests: nothing succeeds again until it resets.
+            hint = metadata.get("remedy_hint") or "Wait for the daily reset, or buy credits to raise the limit."
+            log("warning", f"OpenRouter's daily limit on free-model requests is used up (HTTP 429). {hint}")
+            break
         if exc.code == 402:
-            try:
-                metadata = (json.loads(body_text).get("error") or {}).get("metadata") or {}
-            except (ValueError, AttributeError):
-                metadata = {}
             if metadata.get("limit_source") == "openrouter_in_flight_budget":
                 # A temporary hold while recent paid requests settle: wait for Retry-After and retry.
                 try:

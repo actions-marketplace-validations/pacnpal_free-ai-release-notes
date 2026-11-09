@@ -30,9 +30,9 @@ on:
         type: string
         default: ''
       model:
-        description: "OpenRouter model ID to use, e.g. `anthropic/claude-sonnet-4.5`. Defaults to the free models router. List several, separated by commas or new lines, to fall back in order when one fails or you run out of credits, e.g. `anthropic/claude-sonnet-4.5, openrouter/free`. Empty means `openrouter/free`."
+        description: "OpenRouter model ID to use, e.g. `anthropic/claude-sonnet-4.5`. List several, separated by commas or new lines, to fall back in order, e.g. `anthropic/claude-sonnet-4.5, openrouter/free`. Empty means the free default: `nvidia/nemotron-3-ultra-550b-a55b:free, nvidia/nemotron-3.5-super-vl:free, openrouter/free`."
         type: string
-        default: openrouter/free
+        default: ''
       instructions:
         description: Extra instructions appended to the prompt (tone, audience, sections to emphasise, ...).
         type: string
@@ -54,9 +54,9 @@ on:
         type: number
         default: 0.3
       max-tokens:
-        description: Maximum tokens in the model response.
-        type: number
-        default: 4096
+        description: Maximum tokens in the model response, including hidden reasoning. Empty means 16384 when every model is free (free models are all reasoning models) and 4096 otherwise.
+        type: string
+        default: ''
       retries:
         description: Number of attempts against OpenRouter before giving up (free models are rate limited and vary in quality).
         type: number
