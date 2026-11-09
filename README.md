@@ -27,6 +27,7 @@ This release adds offline support and makes syncing noticeably faster on large p
 ## Contents
 
 - [Quick start](#quick-start)
+- [Set it up with an AI agent](#set-it-up-with-an-ai-agent)
 - [Setting up OPENROUTER_API_KEY](#setting-up-openrouter_api_key)
 - [Usage examples](#usage-examples)
 - [Choosing a model](#choosing-a-model)
@@ -85,6 +86,50 @@ This release adds offline support and makes syncing noticeably faster on large p
    The workflow creates the `v1.0.0` release with an AI-generated title and notes. The notes also appear in the job summary.
 
 The action reads the history since the previous tag from the checkout, so check out with `fetch-depth: 0`. If you don't, it fetches the full history and tags itself, which needs the checkout's default `persist-credentials: true`.
+
+## Set it up with an AI agent
+
+Using a coding agent such as Claude Code, Codex or Copilot? Paste this prompt into it from your repository. It adds the action to the workflow that already makes your releases, or creates a release workflow if there isn't one.
+
+```text
+Add AI-written release titles and notes to this repository with the GitHub Action
+pacnpal/free-ai-release-notes@v1. Read its README first for the inputs, outputs and
+permissions: https://github.com/pacnpal/free-ai-release-notes#readme
+
+1. Look in .github/workflows/ for a workflow that already creates or publishes GitHub
+   releases (it runs on tag pushes or `release: published`, or calls `gh release create`
+   or a release action). If there is one, change it instead of adding a second workflow,
+   and keep its triggers, build steps and uploaded assets as they are:
+   - If a step creates the release itself, add the action before it with `id: notes` and
+     without `create-release`, then give that step `steps.notes.outputs.title` as the
+     title and `steps.notes.outputs.notes-file` as the body (`--notes-file` for gh,
+     `body_path` for most release actions). Turn off any notes it generates itself, such
+     as `generate_release_notes: true`. Pass the outputs through `env:`; never put
+     `${{ steps.notes.outputs.notes }}` inside a `run:` script.
+   - If the workflow runs on `release: published`, add the action with
+     `create-release: true`; it rewrites that release's title and notes in place.
+   - If a tool such as release-please or semantic-release creates the tag and release,
+     add the action after it, only when a release was made, with `tag` set to the tag it
+     created and `create-release: true`. Run `git fetch --tags --force` first so the new
+     tag is in the checkout.
+2. If there is no release workflow, create .github/workflows/release.yml that runs when a
+   tag in this repository's tag style (`v*` if there are no tags yet) is pushed and runs
+   the action with `create-release: true`, like the README's Quick start.
+3. The job needs `permissions: contents: write`, and `actions/checkout` with
+   `fetch-depth: 0` before the action.
+4. Pass the key as `openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}`. Don't ask me
+   for the key and don't write it into any file.
+5. If the repository has more than one tag series (a monorepo, or a moving major tag such
+   as `v1`), set `tag-pattern` so the previous tag comes from the same series, e.g.
+   `v*.*.*`.
+6. Leave `model` unset so the free default models are used, unless I asked for another.
+7. Lint the workflow with actionlint if you can.
+
+Don't push a tag or publish a release to test it. When you're done, tell me which file
+you changed or created and what triggers it, and remind me to create a key at
+https://openrouter.ai/keys and add it as the repository secret OPENROUTER_API_KEY
+(Settings > Secrets and variables > Actions, or `gh secret set OPENROUTER_API_KEY`).
+```
 
 ## Setting up OPENROUTER_API_KEY
 
