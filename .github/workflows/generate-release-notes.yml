@@ -97,6 +97,9 @@ on:
       OPENROUTER_API_KEY:
         description: OpenRouter API key. Must be set as a secret in each repository that uses this workflow.
         required: true
+      WORKFLOW_REPO_TOKEN:
+        description: Token that can read the repository hosting this workflow. Only needed when that repository is private or internal; defaults to github.token.
+        required: false
     outputs:
       title:
         description: Release title.
@@ -163,6 +166,8 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .free-ai-release-notes
+          # The caller's github.token can only read the caller's repository and public ones.
+          token: ${{ secrets.WORKFLOW_REPO_TOKEN || github.token }}
           persist-credentials: false
 
       - name: Generate release notes

@@ -390,7 +390,7 @@ Commit messages, changed file names and PR titles from the release range are sen
 
 The same refs work for the reusable workflow (`pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@v1`). `@main` runs unreleased changes.
 
-For private or internal repositories, this repository must be accessible to the caller (public, or shared under **Settings → Actions → General → Access**).
+For private or internal repositories, this repository must be accessible to the caller (public, or shared under **Settings → Actions → General → Access**). If you host the reusable workflow in a private or internal repository, also pass a token that can read it (for example a fine-grained token with `contents: read` on it) as the `WORKFLOW_REPO_TOKEN` secret: the workflow checks that repository out to run the action, and the caller's `github.token` can't read it. The action itself needs no token for this.
 
 ## Developing this repository
 
