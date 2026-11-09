@@ -462,6 +462,7 @@ jobs:
           # changes"), not ones that merely mention the word ("Fixes for breaking builds").
           BREAKING_HEADING = re.compile(r"^[^\w]*breaking\b(?![ -]?(?:builds?|tests?)\b)", re.I)
           GITHUB_BODY_LIMIT = 125000
+          LIST_LINE = re.compile(r"^(\s*([-*+]|\d+[.)])\s|\s{2,}\S)")  # a list item or an indented continuation
 
 
           def breaking_first(markdown):
@@ -469,7 +470,8 @@ jobs:
 
               If none exists but commits flagged breaking changes, add one.
               """
-              blocks = [[0, False, [], None]]  # [heading level, is breaking, lines, index of first sub-heading]
+              # [heading level, is breaking, lines, index of first sub-heading, index of last own list line]
+              blocks = [[0, False, [], None, None]]
               fence = None  # (character, length) of the open code fence
               last_markdown_level = 0  # level of the most recent "#" heading
               for line in markdown.splitlines():
@@ -485,20 +487,24 @@ jobs:
                       re.match(r"^(#{1,6})\s+(.*)$", line) or re.match(r"^(\*\*)(.+?)\*\*:?\s*$", line)
                   )
                   # A bold line under a "#" heading is a label one level below it ("**Migration:**" stays
-                  # in its section); with no "#" heading above, it is a section heading at the prompt's
-                  # level 3, so a following "#### Migration" stays with it but "### Features" does not.
+                  # in its section), but never above the prompt's section level 3: with no "#" heading
+                  # above, or under a "# Title", a following "#### Migration" stays with it while
+                  # "### Features" does not.
                   if not heading:
                       level = 0
                   elif heading.group(1).startswith("#"):
                       level = last_markdown_level = len(heading.group(1))
                   else:
-                      level = last_markdown_level + 1 if last_markdown_level else 3
+                      level = max(last_markdown_level + 1, 3)
                   current = blocks[-1]
                   if heading and not (current[1] and level > current[0]):
-                      blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line], None])
+                      blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line], None, None])
                   else:
                       if heading and current[3] is None:
                           current[3] = len(current[2])  # a sub-heading kept inside a breaking section
+                      elif (current[3] is None and not in_fence and line.strip()
+                            and LIST_LINE.match(line)):
+                          current[4] = len(current[2])  # a list item (or its continuation) before any sub-heading
                       current[2].append(line)
 
               def join(selected):
@@ -509,18 +515,25 @@ jobs:
               rest = join(b for b in blocks if not b[1])
               if breaking:
                   section = join(breaking)
+                  # Match by hash; fall back to the subject only when no other flagged commit shares it.
+                  subjects = [summary.lower() for _, summary, _ in breaking_changes]
                   missing = [
                       item for sha, summary, item in breaking_changes
-                      if sha not in section and summary.lower() not in section.lower()
+                      if sha not in section
+                      and not (subjects.count(summary.lower()) == 1 and summary.lower() in section.lower())
                   ]
                   if missing:
                       # Insert after the first breaking section's own bullets, before any sub-heading
                       # (found by the fence-aware parse above, so never inside a code block).
                       first = breaking[0][2]
-                      at = breaking[0][3] if breaking[0][3] is not None else len(first)
-                      while at > 1 and not first[at - 1].strip():
-                          at -= 1
-                      if not first[at - 1].lstrip().startswith(("- ", "* ", "#", "**")):
+                      # Right after the section's own list, so not after any text that follows it.
+                      if breaking[0][4] is not None:
+                          at = breaking[0][4] + 1
+                      else:
+                          at = breaking[0][3] if breaking[0][3] is not None else len(first)
+                          while at > 1 and not first[at - 1].strip():
+                              at -= 1
+                      if not (LIST_LINE.match(first[at - 1]) or first[at - 1].lstrip().startswith(("#", "**"))):
                           missing = [""] + missing  # e.g. after a code block: start a new list
                       first[at:at] = missing
                   top = join(breaking)
