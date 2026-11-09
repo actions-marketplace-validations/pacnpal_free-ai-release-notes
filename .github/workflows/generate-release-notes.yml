@@ -479,8 +479,10 @@ jobs:
               fence_in_item = False  # the open code fence belongs to that list item
               for line in markdown.splitlines():
                   # A fence may be indented (inside a list item) or follow a list marker ("- ```sh").
-                  run = re.match(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(`{3,}|~{3,})", line)
+                  run = re.match(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(`{3,}|~{3,})(.*)$", line)
                   marker = run.group(1) if run else ""
+                  if marker.startswith("`") and fence is None and "`" in run.group(2):
+                      marker = ""  # inline code such as ```x```: a backtick fence's info string has no backticks
                   in_fence = fence is not None or bool(marker)
                   opening = fence is None and bool(marker)
                   if fence is None and marker:
