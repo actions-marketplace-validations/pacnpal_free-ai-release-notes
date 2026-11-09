@@ -478,8 +478,9 @@ jobs:
               item_open = False  # inside a list item of the current block, before any sub-heading
               fence_in_item = False  # the open code fence belongs to that list item
               for line in markdown.splitlines():
-                  run = re.match(r"^ {0,3}(`{3,}|~{3,})|^\s+(`{3,}|~{3,})", line)
-                  marker = (run.group(1) or run.group(2)) if run else ""
+                  # A fence may be indented (inside a list item) or follow a list marker ("- ```sh").
+                  run = re.match(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?(`{3,}|~{3,})", line)
+                  marker = run.group(1) if run else ""
                   in_fence = fence is not None or bool(marker)
                   opening = fence is None and bool(marker)
                   if fence is None and marker:
@@ -510,7 +511,10 @@ jobs:
                           item_open = False
                       elif current[3] is None:
                           if opening:
-                              # A code block right after a list item (e.g. a migration example) belongs to it.
+                              # A code block right after a list item (e.g. a migration example), or opened
+                              # on the item's own line ("- ```sh"), belongs to that item.
+                              if LIST_LINE.match(line) and not line[:1].isspace():
+                                  item_open = True
                               fence_in_item = item_open
                               if fence_in_item:
                                   current[4] = len(current[2])
