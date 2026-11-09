@@ -356,7 +356,7 @@ Commit messages, changed file names and PR titles from the release range are sen
 | `OPENROUTER_API_KEY is not set` | Add the secret to this repository and pass it under `secrets:` (or `secrets: inherit`). Secrets aren't available to workflows triggered from forks. |
 | `OpenRouter rejected OPENROUTER_API_KEY (HTTP 401)` | The key is wrong or revoked; create a new one and update the secret. |
 | Warnings with HTTP `404` "No endpoints found matching your data policy" | Your OpenRouter privacy settings exclude every free provider. Allow free endpoints in [privacy settings](https://openrouter.ai/settings/privacy). |
-| Warning with HTTP `402` | Insufficient credits; the workflow stops retrying and uses the fallback notes. With a paid model, add credits or add `openrouter/free` as a fallback in `model`. If you're already on free models, your OpenRouter balance is negative, which blocks free models too: add credits. |
+| Warning with HTTP `402` | If it says the in-flight spending budget is temporarily full, the workflow waits for OpenRouter's `Retry-After` and retries on its own. Otherwise it means insufficient credits (the warning includes OpenRouter's hint); the workflow stops retrying and uses the fallback notes. With a paid model, add credits or add `openrouter/free` as a fallback in `model`. If you're already on free models, your OpenRouter balance is negative, which blocks free models too: add credits. |
 | Warnings with HTTP `429` | Free-tier rate limit. Raise `retries`, or wait; the fallback still publishes the release. |
 | `No tag to release` | The caller didn't run on a tag. Pass `tag:`. |
 | `Resource not accessible by integration` when creating the release | The caller needs `permissions: contents: write`. |

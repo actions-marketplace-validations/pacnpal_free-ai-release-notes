@@ -497,12 +497,30 @@ jobs:
                   print(f"Generated notes with {used_model or 'unknown model'} on attempt {attempt}.")
                   break
               except urllib.error.HTTPError as exc:
-                  detail = exc.read().decode(errors="replace")[:500]
+                  body_text = exc.read().decode(errors="replace")
+                  detail = body_text[:500]
                   if exc.code == 401:
                       sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
                   if exc.code == 402:
-                      # Out of credits: retrying won't help. A negative balance also blocks free models.
-                      hint = (
+                      try:
+                          metadata = (json.loads(body_text).get("error") or {}).get("metadata") or {}
+                      except (ValueError, AttributeError):
+                          metadata = {}
+                      if metadata.get("limit_source") == "openrouter_in_flight_budget":
+                          # A temporary hold while recent paid requests settle: wait for Retry-After and retry.
+                          try:
+                              wait = min(max(float(exc.headers.get("Retry-After", "")), 1.0), 120.0)
+                          except ValueError:
+                              wait = min(5 * 2 ** (attempt - 1), 60)
+                          retrying = f"retrying in {wait:.0f}s" if attempt < attempts else "no attempts left"
+                          log("warning", f"Attempt {attempt}/{attempts}: OpenRouter's in-flight spending budget is "
+                              f"temporarily full (HTTP 402); {retrying}.")
+                          if attempt < attempts:
+                              time.sleep(wait)
+                          continue
+                      # Out of credits or a request too large for the budget: retrying won't help.
+                      # A negative balance also blocks free models.
+                      hint = metadata.get("remedy_hint") or (
                           "Your OpenRouter balance may be negative, which blocks free models too; add credits."
                           if FREE_ROUTER in models or all(m.endswith(":free") for m in models)
                           else f"Add credits, or add {FREE_ROUTER} as a fallback in the `model` input to stay free."
