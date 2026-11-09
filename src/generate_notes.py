@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import urllib.error
@@ -440,8 +441,9 @@ if len(notes) >= GITHUB_BODY_LIMIT:  # the notes file adds a trailing newline
     notes = notes[: GITHUB_BODY_LIMIT - 1 - len(note)].rsplit("\n", 1)[0] + note
     log("warning", "Release notes exceeded GitHub's 125,000-character limit and were truncated.")
 
-notes_file = os.path.join(env("RUNNER_TEMP") or ".", "release-notes.md")
-with open(notes_file, "w", encoding="utf-8") as fh:
+# A file per run: a job may call the action more than once and read each notes-file later.
+fd, notes_file = tempfile.mkstemp(prefix="release-notes-", suffix=".md", dir=env("RUNNER_TEMP") or None)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
     fh.write(notes + "\n")
 
 set_output("title", title)
