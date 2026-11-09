@@ -420,8 +420,14 @@ jobs:
                   if exc.code == 401:
                       sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
                   if exc.code == 402:
-                      log("warning", f"OpenRouter returned HTTP 402: not enough credits for {', '.join(models)}. "
-                          f"Add credits, or add {FREE_ROUTER} as a fallback in the `model` input to stay free.")
+                      # Out of credits: retrying won't help. A negative balance also blocks free models.
+                      hint = (
+                          "Your OpenRouter balance may be negative, which blocks free models too; add credits."
+                          if FREE_ROUTER in models or all(m.endswith(":free") for m in models)
+                          else f"Add credits, or add {FREE_ROUTER} as a fallback in the `model` input to stay free."
+                      )
+                      log("warning", f"OpenRouter returned HTTP 402 (insufficient credits) for {', '.join(models)}. {hint}")
+                      break
                   if exc.code == 400 and use_json_mode:
                       use_json_mode = False
                   log("warning", f"Attempt {attempt}/{attempts}: OpenRouter returned HTTP {exc.code}: {detail}")
