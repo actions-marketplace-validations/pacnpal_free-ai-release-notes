@@ -260,7 +260,27 @@ jobs:
           # "fix(api)!:" or a "BREAKING CHANGE:" footer), across the whole range.
           BREAKING_SUBJECT = re.compile(r"^[A-Za-z]+(?:\([^)]*\))?!:\s*")
           CONVENTIONAL_PREFIX = re.compile(r"^[A-Za-z]+(?:\([^)]*\))?!?:\s*")
-          BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGES?:\s*(.*)", re.M)
+          BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGES?:\s*(.*)$")
+          # Any Conventional Commits / git trailer token, which ends a multi-line footer value.
+          FOOTER_TOKEN = re.compile(r"^(?:BREAKING[ -]CHANGES?|[A-Za-z][\w-]*)(?::\s|\s#)")
+
+
+          def breaking_footer(body):
+              """Return the lines of a BREAKING CHANGE footer, continuation lines included, or None."""
+              lines = body.splitlines()
+              for i, line in enumerate(lines):
+                  match = BREAKING_FOOTER.match(line)
+                  if not match:
+                      continue
+                  value = [match.group(1).strip()]
+                  for following in lines[i + 1 :]:
+                      if FOOTER_TOKEN.match(following):
+                          break
+                      value.append(following.rstrip())
+                  return [v for v in value if v.strip()]
+              return None
+
+
           breaking_changes = []
           raw_breaking = git(
               "log", "--no-merges", "-E",
@@ -270,12 +290,12 @@ jobs:
           for entry in filter(None, raw_breaking.split("\x1e")):
               sha, subject, body = (entry.split("\x1f") + ["", "", ""])[:3]
               subject = subject.strip()
-              footer = BREAKING_FOOTER.search(body)
-              if not BREAKING_SUBJECT.match(subject) and not footer:
+              footer = breaking_footer(body)
+              if not BREAKING_SUBJECT.match(subject) and footer is None:
                   continue
               item = f"- {CONVENTIONAL_PREFIX.sub('', subject)} ({sha.strip()})"
-              if footer and footer.group(1).strip():
-                  item += f": {footer.group(1).strip()}"
+              if footer:
+                  item += f": {footer[0]}" + "".join(f"\n  {line.strip()}" for line in footer[1:])
               breaking_changes.append(item)
           if breaking_changes:
               print(f"Detected {len(breaking_changes)} breaking change(s) from commit markers.")
@@ -446,10 +466,15 @@ jobs:
               If none exists but commits flagged breaking changes, add one.
               """
               blocks = [[0, False, []]]  # [heading level, is breaking, lines]
-              in_fence = False
+              fence = None  # (character, length) of the open code fence
               for line in markdown.splitlines():
-                  if line.lstrip().startswith(("```", "~~~")):
-                      in_fence = not in_fence
+                  run = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+                  marker = run.group(1) if run else ""
+                  in_fence = fence is not None or bool(marker)
+                  if fence is None and marker:
+                      fence = (marker[0], len(marker))
+                  elif fence and marker[:1] == fence[0] and len(marker) >= fence[1] and line.strip() == marker:
+                      fence = None  # closing fence: same character, at least as long, nothing after it
                   # Markdown headings, plus whole-line bold text used as a heading.
                   heading = None if in_fence else (
                       re.match(r"^(#{1,6})\s+(.*)$", line) or re.match(r"^(\*\*)(.+?)\*\*:?\s*$", line)
