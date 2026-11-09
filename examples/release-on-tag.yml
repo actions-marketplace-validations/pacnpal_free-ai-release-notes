@@ -1,0 +1,23 @@
+# Create a GitHub release with an AI-written title and notes whenever a
+# version tag is pushed.
+#
+# Copy to .github/workflows/release.yml in your repository and add an
+# OPENROUTER_API_KEY repository secret.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
+    with:
+      create-release: true
+      tag-pattern: 'v*'
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

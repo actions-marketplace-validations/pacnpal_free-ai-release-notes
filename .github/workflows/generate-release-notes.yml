@@ -1,0 +1,459 @@
+name: Generate AI release notes
+
+# Reusable workflow: generates a release title and release notes from git
+# history with OpenRouter's free models router (https://openrouter.ai/openrouter/free),
+# and optionally creates or updates the GitHub release.
+#
+# Every repository that calls this workflow must define its own
+# OPENROUTER_API_KEY secret and pass it in (explicitly or with `secrets: inherit`).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to generate notes for. Defaults to the triggering tag (github.ref_name) when the caller runs on a tag.
+        type: string
+        default: ''
+      previous-tag:
+        description: Tag to diff against. Defaults to the closest earlier tag reachable from the release commit.
+        type: string
+        default: ''
+      target:
+        description: Commit-ish to release when the tag does not exist yet. Defaults to the triggering commit (github.sha).
+        type: string
+        default: ''
+      tag-pattern:
+        description: Glob used to pick the previous tag automatically (passed to `git describe --match`), e.g. `v*`.
+        type: string
+        default: ''
+      model:
+        description: OpenRouter model ID.
+        type: string
+        default: openrouter/free
+      instructions:
+        description: Extra instructions appended to the prompt (tone, audience, sections to emphasise, ...).
+        type: string
+        default: ''
+      title-template:
+        description: Release title template. `{tag}` is replaced with the tag and `{title}` with the AI-generated title.
+        type: string
+        default: '{tag}: {title}'
+      max-commits:
+        description: Maximum number of commits sent to the model.
+        type: number
+        default: 200
+      max-input-chars:
+        description: Maximum size of the git context sent to the model, in characters.
+        type: number
+        default: 60000
+      temperature:
+        description: Sampling temperature.
+        type: number
+        default: 0.3
+      max-tokens:
+        description: Maximum tokens in the model response.
+        type: number
+        default: 4096
+      retries:
+        description: Number of attempts against OpenRouter before giving up (free models are rate limited and vary in quality).
+        type: number
+        default: 3
+      use-github-notes:
+        description: "Also send GitHub's auto-generated notes (merged PRs, new contributors) to the model as context. Needs `contents: write`; skipped silently otherwise."
+        type: boolean
+        default: true
+      append-changelog-link:
+        description: Append a "Full Changelog" compare link to the notes.
+        type: boolean
+        default: true
+      fail-on-error:
+        description: Fail the job if the AI notes cannot be generated. When false, falls back to GitHub's notes (or a plain commit list) and the tag as title.
+        type: boolean
+        default: false
+      create-release:
+        description: "Create the GitHub release (or update it if it already exists) with the generated title and notes. Needs `contents: write`."
+        type: boolean
+        default: false
+      draft:
+        description: Create the release as a draft (only when a new release is created).
+        type: boolean
+        default: false
+      prerelease:
+        description: Mark the release as a prerelease (only when a new release is created).
+        type: boolean
+        default: false
+      runs-on:
+        description: Runner label.
+        type: string
+        default: ubuntu-latest
+      api-base-url:
+        description: OpenRouter API base URL.
+        type: string
+        default: https://openrouter.ai/api/v1
+    secrets:
+      OPENROUTER_API_KEY:
+        description: OpenRouter API key. Must be set as a secret in each repository that uses this workflow.
+        required: true
+    outputs:
+      title:
+        description: Release title.
+        value: ${{ jobs.generate.outputs.title }}
+      notes:
+        description: Release notes (Markdown).
+        value: ${{ jobs.generate.outputs.notes }}
+      tag:
+        description: Tag the notes were generated for.
+        value: ${{ jobs.generate.outputs.tag }}
+      previous-tag:
+        description: Tag the changes were compared against (empty if none).
+        value: ${{ jobs.generate.outputs.previous-tag }}
+      model:
+        description: Model OpenRouter actually used (empty if the fallback was used).
+        value: ${{ jobs.generate.outputs.model }}
+      ai-generated:
+        description: "'true' if the notes came from the model, 'false' if the fallback was used."
+        value: ${{ jobs.generate.outputs.ai-generated }}
+      release-url:
+        description: URL of the created or updated release (only when create-release is true).
+        value: ${{ jobs.generate.outputs.release-url }}
+
+jobs:
+  generate:
+    name: Generate release notes
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      title: ${{ steps.generate.outputs.title }}
+      notes: ${{ steps.generate.outputs.notes }}
+      tag: ${{ steps.generate.outputs.tag }}
+      previous-tag: ${{ steps.generate.outputs.previous-tag }}
+      model: ${{ steps.generate.outputs.model }}
+      ai-generated: ${{ steps.generate.outputs.ai-generated }}
+      release-url: ${{ steps.release.outputs.url }}
+    steps:
+      - name: Require OPENROUTER_API_KEY
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error title=OPENROUTER_API_KEY is not set::Add an OPENROUTER_API_KEY secret to this repository (Settings > Secrets and variables > Actions) and pass it to this reusable workflow under 'secrets:' (OPENROUTER_API_KEY) or with 'secrets: inherit'. Get a key at https://openrouter.ai/keys"
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Generate title and notes
+        id: generate
+        shell: python
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          IN_TAG: ${{ inputs.tag }}
+          IN_PREVIOUS_TAG: ${{ inputs.previous-tag }}
+          IN_TARGET: ${{ inputs.target }}
+          IN_TAG_PATTERN: ${{ inputs.tag-pattern }}
+          IN_MODEL: ${{ inputs.model }}
+          IN_INSTRUCTIONS: ${{ inputs.instructions }}
+          IN_TITLE_TEMPLATE: ${{ inputs.title-template }}
+          IN_MAX_COMMITS: ${{ inputs.max-commits }}
+          IN_MAX_INPUT_CHARS: ${{ inputs.max-input-chars }}
+          IN_TEMPERATURE: ${{ inputs.temperature }}
+          IN_MAX_TOKENS: ${{ inputs.max-tokens }}
+          IN_RETRIES: ${{ inputs.retries }}
+          IN_USE_GITHUB_NOTES: ${{ inputs.use-github-notes }}
+          IN_APPEND_CHANGELOG_LINK: ${{ inputs.append-changelog-link }}
+          IN_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+          IN_API_BASE_URL: ${{ inputs.api-base-url }}
+        run: |
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          import uuid
+
+
+          def env(name, default=""):
+              return os.environ.get(name, default).strip()
+
+
+          def env_bool(name):
+              return env(name).lower() == "true"
+
+
+          def env_num(name, default, cast=int):
+              try:
+                  return cast(float(env(name)))
+              except ValueError:
+                  return default
+
+
+          def git(*args, check=True):
+              proc = subprocess.run(["git", *args], capture_output=True, text=True)
+              if check and proc.returncode != 0:
+                  sys.exit(f"::error::git {' '.join(args)} failed: {proc.stderr.strip()}")
+              return proc.stdout.rstrip() if proc.returncode == 0 else ""
+
+
+          def set_output(name, value):
+              delim = f"EOF_{uuid.uuid4().hex}"
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{name}<<{delim}\n{value}\n{delim}\n")
+
+
+          def log(level, message):
+              # Keep model output out of the log: it could contain workflow commands.
+              print(f"::{level}::{message}", flush=True)
+
+
+          repo = env("GITHUB_REPOSITORY")
+          server = env("GITHUB_SERVER_URL", "https://github.com")
+          api_url = env("GITHUB_API_URL", "https://api.github.com")
+
+          # ---------------------------------------------------------------- refs
+          tag = env("IN_TAG")
+          if not tag and env("GITHUB_REF_TYPE") == "tag":
+              tag = env("GITHUB_REF_NAME")
+          if not tag:
+              sys.exit("::error::No tag to release. Pass the `tag` input or run the caller on a tag push / release event.")
+
+          tag_exists = bool(git("rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}", check=False))
+          head_ref = tag if tag_exists else (env("IN_TARGET") or env("GITHUB_SHA"))
+          head_sha = git("rev-parse", f"{head_ref}^{{commit}}")
+
+          previous_tag = env("IN_PREVIOUS_TAG")
+          if not previous_tag:
+              describe = ["describe", "--tags", "--abbrev=0"]
+              if env("IN_TAG_PATTERN"):
+                  describe += ["--match", env("IN_TAG_PATTERN")]
+              previous_tag = git(*describe, f"{head_sha}^", check=False)
+              if previous_tag == tag:
+                  previous_tag = ""
+          elif not git("rev-parse", "-q", "--verify", f"refs/tags/{previous_tag}^{{commit}}", check=False):
+              sys.exit(f"::error::previous-tag '{previous_tag}' does not exist.")
+
+          rev_range = f"{previous_tag}..{head_sha}" if previous_tag else head_sha
+          print(f"Release: {tag} ({head_sha[:12]}), comparing against: {previous_tag or '(beginning of history)'}")
+
+          # ------------------------------------------------------------- context
+          max_commits = env_num("IN_MAX_COMMITS", 200)
+          total_commits = int(git("rev-list", "--count", "--no-merges", rev_range) or 0)
+          raw_log = git("log", "--no-merges", f"-n{max_commits}", "--format=%x1e%h%x1f%an%x1f%s%x1f%b", rev_range)
+          commit_lines = []
+          for entry in filter(None, raw_log.split("\x1e")):
+              sha, author, subject, body = (entry.split("\x1f") + ["", "", "", ""])[:4]
+              line = f"- {subject.strip()} ({sha}, {author})"
+              body = "\n".join(f"    {b}" for b in body.strip().splitlines() if b.strip())
+              commit_lines.append(f"{line}\n{body}" if body else line)
+          commits_text = "\n".join(commit_lines) or "(no commits)"
+          if total_commits > len(commit_lines):
+              commits_text += f"\n... and {total_commits - len(commit_lines)} older commits not shown"
+
+          diffstat = git("diff", "--stat=120", f"{previous_tag}..{head_sha}", check=False) if previous_tag else ""
+          stat_lines = diffstat.splitlines()
+          if len(stat_lines) > 80:
+              diffstat = "\n".join(stat_lines[:79] + [stat_lines[-1]])
+
+          github_notes = ""
+          if env_bool("IN_USE_GITHUB_NOTES") and env("GITHUB_TOKEN"):
+              payload = {"tag_name": tag, "target_commitish": head_sha}
+              if previous_tag:
+                  payload["previous_tag_name"] = previous_tag
+              req = urllib.request.Request(
+                  f"{api_url}/repos/{repo}/releases/generate-notes",
+                  data=json.dumps(payload).encode(),
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {env('GITHUB_TOKEN')}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      github_notes = json.load(resp).get("body", "").strip()
+              except Exception as exc:  # noqa: BLE001 - best-effort context only
+                  print(f"GitHub generated notes unavailable ({exc}); continuing with git history only.")
+
+          budget = env_num("IN_MAX_INPUT_CHARS", 60000)
+          sections = [
+              ("GitHub generated notes (merged pull requests and contributors)", github_notes),
+              ("Files changed", diffstat),
+              ("Commits (newest first)", commits_text),
+          ]
+          context_parts = []
+          for heading, body in sections:
+              if not body:
+                  continue
+              block = f"## {heading}\n{body}"
+              if len(block) > budget:
+                  block = block[: max(budget, 0)] + "\n... (truncated)"
+              budget -= len(block)
+              context_parts.append(block)
+              if budget <= 0:
+                  break
+
+          # -------------------------------------------------------------- prompt
+          system_prompt = """You write release notes for software projects from git history.
+          Respond with ONLY a JSON object, without code fences, of the form {"title": string, "notes": string}.
+
+          "title": a short, human-friendly release title (at most 60 characters) that captures the main theme of the release. Do not include the version number. No trailing period. No emoji.
+
+          "notes": GitHub-flavored Markdown. Start with a 1-3 sentence summary of the release. Then group the changes under level-3 headings chosen from this list, in this order, leaving out any that would be empty: "⚠️ Breaking Changes", "✨ New Features", "🐛 Bug Fixes", "⚡ Performance", "📚 Documentation", "🔧 Maintenance". Write each change as one concise, user-facing bullet and merge related commits into a single bullet. Keep pull request references (#123) and @mentions exactly as they appear in the input. Leave out noise such as merge commits, typo fixes and CI tweaks unless nothing else changed. Never invent changes that the input does not support. Do not add a top-level heading, the version number, or a "Full Changelog" link."""
+          system_prompt = "\n".join(line.strip() for line in system_prompt.splitlines())
+
+          user_prompt = "\n\n".join(
+              [
+                  f"Repository: {repo}",
+                  f"Release: {tag}",
+                  f"Previous release: {previous_tag or 'none (first release)'}",
+                  f"Commits in this release: {total_commits}",
+                  *([f"Additional instructions from the maintainers:\n{env('IN_INSTRUCTIONS')}"] if env("IN_INSTRUCTIONS") else []),
+                  *context_parts,
+              ]
+          )
+
+          # ---------------------------------------------------------- OpenRouter
+          def parse_response(content):
+              content = re.sub(r"<think>.*?</think>", "", content or "", flags=re.S).strip()
+              fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, flags=re.S)
+              if fenced:
+                  content = fenced.group(1)
+              start, end = content.find("{"), content.rfind("}")
+              if start == -1 or end <= start:
+                  raise ValueError("response contains no JSON object")
+              data = json.loads(content[start : end + 1])
+              title = data.get("title") if isinstance(data, dict) else None
+              notes = data.get("notes") if isinstance(data, dict) else None
+              if not isinstance(title, str) or not isinstance(notes, str):
+                  raise ValueError("response JSON is missing string 'title' / 'notes'")
+              title = " ".join(title.split()).strip().strip("\"'`#*").rstrip(".").strip()
+              notes = notes.strip()
+              if not title or not notes:
+                  raise ValueError("response has an empty title or notes")
+              return title[:100], notes
+
+
+          def call_openrouter(use_json_mode):
+              body = {
+                  "model": env("IN_MODEL") or "openrouter/free",
+                  "messages": [
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt},
+                  ],
+                  "temperature": env_num("IN_TEMPERATURE", 0.3, float),
+                  "max_tokens": env_num("IN_MAX_TOKENS", 4096),
+                  "reasoning": {"exclude": True},
+              }
+              if use_json_mode:
+                  body["response_format"] = {"type": "json_object"}
+              req = urllib.request.Request(
+                  f"{env('IN_API_BASE_URL').rstrip('/')}/chat/completions",
+                  data=json.dumps(body).encode(),
+                  method="POST",
+                  headers={
+                      "Authorization": f"Bearer {env('OPENROUTER_API_KEY')}",
+                      "Content-Type": "application/json",
+                      "HTTP-Referer": f"{server}/{repo}",
+                      "X-Title": "free-ai-release-notes",
+                  },
+              )
+              with urllib.request.urlopen(req, timeout=180) as resp:
+                  data = json.load(resp)
+              if data.get("error"):
+                  raise RuntimeError(f"OpenRouter error: {data['error']}")
+              choice = (data.get("choices") or [{}])[0]
+              title, notes = parse_response((choice.get("message") or {}).get("content"))
+              return title, notes, data.get("model", "")
+
+
+          ai_title = ai_notes = used_model = ""
+          attempts = max(env_num("IN_RETRIES", 3), 1)
+          use_json_mode = True
+          for attempt in range(1, attempts + 1):
+              try:
+                  ai_title, ai_notes, used_model = call_openrouter(use_json_mode)
+                  print(f"Generated notes with {used_model or 'unknown model'} on attempt {attempt}.")
+                  break
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode(errors="replace")[:500]
+                  if exc.code == 401:
+                      sys.exit("::error::OpenRouter rejected OPENROUTER_API_KEY (HTTP 401). Check the secret's value.")
+                  if exc.code == 400 and use_json_mode:
+                      use_json_mode = False
+                  log("warning", f"Attempt {attempt}/{attempts}: OpenRouter returned HTTP {exc.code}: {detail}")
+              except Exception as exc:  # noqa: BLE001
+                  log("warning", f"Attempt {attempt}/{attempts}: {exc}")
+              if attempt < attempts:
+                  time.sleep(min(5 * 2 ** (attempt - 1), 60))
+
+          # -------------------------------------------------------------- output
+          compare_link = f"**Full Changelog**: {server}/{repo}/compare/{previous_tag}...{tag}" if previous_tag else ""
+          if ai_notes:
+              title = env("IN_TITLE_TEMPLATE", "{tag}: {title}").replace("{tag}", tag).replace("{title}", ai_title)
+              notes = ai_notes
+              if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
+                  notes += f"\n\n{compare_link}"
+          else:
+              if env_bool("IN_FAIL_ON_ERROR"):
+                  sys.exit("::error::Could not generate release notes with OpenRouter.")
+              log("warning", "Could not generate release notes with OpenRouter; using fallback notes.")
+              title = tag
+              if github_notes:
+                  notes = github_notes
+              else:
+                  notes = "## What's Changed\n" + "\n".join(line.splitlines()[0] for line in commit_lines)
+                  if compare_link and env_bool("IN_APPEND_CHANGELOG_LINK"):
+                      notes += f"\n\n{compare_link}"
+
+          notes_file = os.path.join(env("RUNNER_TEMP") or ".", "release-notes.md")
+          with open(notes_file, "w", encoding="utf-8") as fh:
+              fh.write(notes + "\n")
+
+          set_output("title", title)
+          set_output("notes", notes)
+          set_output("notes-file", notes_file)
+          set_output("tag", tag)
+          set_output("previous-tag", previous_tag)
+          set_output("head-sha", head_sha)
+          set_output("model", used_model if ai_notes else "")
+          set_output("ai-generated", "true" if ai_notes else "false")
+
+          if env("GITHUB_STEP_SUMMARY"):
+              source = f"`{used_model}` via OpenRouter" if ai_notes else "fallback (AI generation failed)"
+              with open(env("GITHUB_STEP_SUMMARY"), "a", encoding="utf-8") as fh:
+                  fh.write(f"# {title}\n\n{notes}\n\n---\n_Generated by {source}._\n")
+
+      - name: Create or update release
+        id: release
+        if: inputs.create-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.generate.outputs.tag }}
+          TITLE: ${{ steps.generate.outputs.title }}
+          NOTES_FILE: ${{ steps.generate.outputs.notes-file }}
+          HEAD_SHA: ${{ steps.generate.outputs.head-sha }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Updating existing release $TAG"
+            gh release edit "$TAG" --repo "$REPO" --title "$TITLE" --notes-file "$NOTES_FILE"
+          else
+            echo "Creating release $TAG"
+            args=(--repo "$REPO" --title "$TITLE" --notes-file "$NOTES_FILE" --target "$HEAD_SHA")
+            if [ "$DRAFT" = "true" ]; then args+=(--draft); fi
+            if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+            gh release create "$TAG" "${args[@]}"
+          fi
+          url="$(gh release view "$TAG" --repo "$REPO" --json url --jq .url)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Release: $url" >> "$GITHUB_STEP_SUMMARY"
