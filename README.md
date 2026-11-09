@@ -256,7 +256,11 @@ An empty `model` also means `openrouter/free`.
 
 The model is instructed in no uncertain terms to put breaking changes first, above the summary:
 
-- **Detected from commits.** Commits marked as breaking with [Conventional Commits](https://www.conventionalcommits.org/) (`feat!: ...`, `fix(api)!: ...`, or a `BREAKING CHANGE: ...` footer, including multi-line footers) are collected across the whole release range, even beyond `max-commits`. They're handed to the model as changes it **must** list, each ending with its commit hash, and the prompt ends with a reminder of how many there are.
+- **Detected from commits.** Commits marked as breaking with [Conventional Commits](https://www.conventionalcommits.org/) (`feat!: ...`, `fix(api)!: ...`, or a `BREAKING CHANGE: ...` footer) are collected across the whole release range, even beyond `max-commits`. They're handed to the model in full as changes it **must** list, each ending with its commit hash, and the prompt ends with a reminder of how many there are. Footers are read carefully:
+  - multi-line footers keep their indentation, blank lines and code examples (e.g. a YAML migration snippet), and end at the next trailer such as `Refs:` or `Signed-off-by:`;
+  - a commit with several `BREAKING CHANGE:` footers lists each of them;
+  - an empty `BREAKING CHANGE:` footer still marks the commit as breaking;
+  - `BREAKING CHANGE:` lines inside a code block, such as a documented example, are ignored.
 - **Recognised by the model.** The model is also told what counts as breaking even without a marker: removed or renamed APIs, options, commands and settings, changed defaults or behaviour, newly required configuration, and dropped platform support.
 - **First, every time.** The prompt makes this its overriding rule: when there is any breaking change, the very first line of the notes must be `### ⚠️ Breaking Changes`, with each item saying what changed and what users must do to upgrade, and breaking changes may not appear anywhere else.
 - **The model's notes are published as written.** The workflow doesn't rearrange them. If the model's notes don't mention a flagged commit by hash, the job logs a warning naming it so you can spot it.
@@ -328,9 +332,9 @@ The reusable workflow doesn't declare permissions; it runs with what the **calle
 3. **Works out the range**: the release tag (or `target` if the tag isn't created yet) and the previous tag.
 4. **Collects context**: commits flagged as breaking, commit subjects and bodies (merges excluded, up to `max-commits`), a diffstat of changed files, and GitHub's generated notes when permitted, trimmed to `max-input-chars` (the flagged breaking commits are always sent in full).
 5. **Calls OpenRouter** with the `model` input (`openrouter/free` by default, which routes the request to a randomly chosen free model that supports the features asked for), plus any fallback models you listed. The model is asked for JSON with a `title` and Markdown `notes`: Breaking Changes first, then a summary, then New Features, Bug Fixes, Performance, Documentation and Maintenance. It is told not to invent changes. The answer is parsed defensively (code fences and `<think>` blocks are stripped) and validated.
-6. **Retries** on rate limits, server errors and unusable answers with backoff (5s, 10s, 20s, ...). If a model rejects JSON mode, later attempts drop it.
+6. **Retries** on rate limits, server errors and unusable answers with backoff (5s, 10s, 20s, ...). If a model rejects JSON mode, later attempts drop it. An HTTP `402` caused by OpenRouter's temporary in-flight spending hold is retried after its `Retry-After`; any other `402` (insufficient credits) stops retrying and uses the fallback.
 7. **Checks breaking changes**: logs a warning for any flagged breaking commit the model's notes don't mention (see [Breaking changes](#breaking-changes)).
-8. **Writes outputs** and a preview to the job summary, and with `create-release: true` creates the release (`gh release create`) or edits the existing one (`gh release edit`).
+8. **Writes outputs** and a preview to the job summary, and with `create-release: true` creates the release (`gh release create`) or edits the existing one (`gh release edit`). Notes longer than GitHub's 125,000-character release limit are cut at a line boundary with a note saying so.
 
 Model output is never printed to the log or executed: it only goes to step outputs, a Markdown file and the job summary.
 
@@ -362,7 +366,7 @@ Commit messages, changed file names and PR titles from the release range are sen
 | `Resource not accessible by integration` when creating the release | The caller needs `permissions: contents: write`. |
 | Notes compare against the wrong tag | Set `tag-pattern` or `previous-tag`. |
 | A breaking change isn't listed, or a warning says a flagged commit isn't mentioned | Mark breaking commits with `!` (e.g. `feat!: ...`) or a `BREAKING CHANGE:` footer so they're handed to the model as mandatory. If a free model still leaves one out, re-run the job or set `model` to a more capable model. |
-| `Release notes exceeded GitHub's 125,000-character limit` | The notes were cut at a line boundary to fit GitHub's release body limit; breaking changes come first, so they're kept. Lower `max-commits` or narrow the range with `previous-tag`. |
+| `Release notes exceeded GitHub's 125,000-character limit` | The notes were cut at a line boundary to fit GitHub's release body limit. Breaking changes come first, so they survive unless the breaking-change list alone is that long. Lower `max-commits` or narrow the range with `previous-tag`. |
 | `ai-generated` is `false` | All attempts failed; the job's warnings say why. |
 
 ## Pinning a version
