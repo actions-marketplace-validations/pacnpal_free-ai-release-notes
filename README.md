@@ -1,6 +1,6 @@
 # free-ai-release-notes
 
-A reusable GitHub Actions workflow that writes your release **titles** and **release notes** with AI, for free, using OpenRouter's [free models router](https://openrouter.ai/openrouter/free) (`openrouter/free`). Prefer a specific model? [Bring your own](#choosing-a-model), with the free router as a fallback.
+A GitHub Action (also available as a [reusable workflow](#reusable-workflow)) that writes your release **titles** and **release notes** with AI, for free, using OpenRouter's [free models router](https://openrouter.ai/openrouter/free) (`openrouter/free`). Prefer a specific model? [Bring your own](#choosing-a-model), with the free router as a fallback.
 
 It reads the commits (and, when allowed, the merged pull requests) between the previous tag and the new one, asks the model to summarise them into grouped, user-facing Markdown notes and a short title, and then either creates/updates the GitHub release for you or hands the title and notes to the rest of your workflow. [Breaking changes come first.](#breaking-changes)
 
@@ -44,7 +44,7 @@ This release adds offline support and makes syncing noticeably faster on large p
 ## Quick start
 
 1. [Create an OpenRouter API key](https://openrouter.ai/keys) (free account, no credits needed).
-2. In **each repository** that will use the workflow, add it as a secret named `OPENROUTER_API_KEY` (see [below](#setting-up-openrouter_api_key)).
+2. In **each repository** that will use the action, add it as a secret named `OPENROUTER_API_KEY` (see [below](#setting-up-openrouter_api_key)).
 3. Add `.github/workflows/release.yml` to that repository:
 
    ```yaml
@@ -60,11 +60,16 @@ This release adds offline support and makes syncing noticeably faster on large p
 
    jobs:
      release:
-       uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
-       with:
-         create-release: true
-       secrets:
-         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v5
+           with:
+             fetch-depth: 0
+
+         - uses: pacnpal/free-ai-release-notes@v1
+           with:
+             openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+             create-release: true
    ```
 
 4. Push a tag:
@@ -79,9 +84,11 @@ This release adds offline support and makes syncing noticeably faster on large p
 
    The workflow creates the `v1.0.0` release with an AI-generated title and notes. The notes also appear in the job summary.
 
+The action reads the history since the previous tag from the checkout, so check out with `fetch-depth: 0`. If you don't, it fetches the full history and tags itself, which needs the checkout's default `persist-credentials: true`.
+
 ## Setting up OPENROUTER_API_KEY
 
-The key is **required**, and it must be set in every repository that calls the workflow. The workflow stops at its first step with an error explaining what to do if the key is missing.
+The key is **required**, and it must be set in every repository that uses the action. The action stops at its first step with an error explaining what to do if the key is missing.
 
 **From the GitHub UI:** repository **Settings → Secrets and variables → Actions → New repository secret**, name `OPENROUTER_API_KEY`, value your key.
 
@@ -91,31 +98,28 @@ The key is **required**, and it must be set in every repository that calls the w
 gh secret set OPENROUTER_API_KEY
 ```
 
-Then pass it to the workflow in one of two ways:
+Then pass it to the action:
 
 ```yaml
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-or forward all of the caller's secrets:
-
-```yaml
-    secrets: inherit
-```
-
-> An organization secret works too, as long as it is made available to the repository; it is still read as `secrets.OPENROUTER_API_KEY` in the caller.
+> An organization secret works too, as long as it is made available to the repository; it is still read as `secrets.OPENROUTER_API_KEY` in the workflow.
 
 ## Usage examples
 
-Ready-to-copy caller workflows live in [`examples/`](examples):
+Ready-to-copy workflows live in [`examples/`](examples):
 
 | File | When it runs | What it does |
 | --- | --- | --- |
 | [`release-on-tag.yml`](examples/release-on-tag.yml) | A `v*` tag is pushed | Creates the release with AI title and notes |
 | [`release-on-publish.yml`](examples/release-on-publish.yml) | A release is published in the UI | Replaces that release's title and notes in place |
 | [`manual-release.yml`](examples/manual-release.yml) | Run by hand with a version | Creates a draft release (and tag) from the chosen branch |
-| [`use-outputs.yml`](examples/use-outputs.yml) | A `v*` tag is pushed | Only generates text; your own job builds and publishes |
+| [`use-outputs.yml`](examples/use-outputs.yml) | A `v*` tag is pushed | Only generates text; your own step builds and publishes |
+| [`reusable-workflow.yml`](examples/reusable-workflow.yml) | A `v*` tag is pushed | The quick start as a [reusable workflow](#reusable-workflow) |
+
+The snippets below show only the action step; each job also needs `runs-on` and the `actions/checkout` step from the [quick start](#quick-start).
 
 ### Create the release on tag push
 
@@ -131,13 +135,11 @@ on:
 permissions:
   contents: write
 
-jobs:
-  notes:
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
-    with:
-      create-release: true # an existing release is updated, not duplicated
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+# ...
+      - uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          create-release: true # an existing release is updated, not duplicated
 ```
 
 ### Release a tag that doesn't exist yet
@@ -154,58 +156,46 @@ on:
 permissions:
   contents: write
 
-jobs:
-  release:
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
-    with:
-      tag: ${{ inputs.version }}
-      target: ${{ github.sha }}
-      draft: true
-      create-release: true
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+# ...
+      - uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          tag: ${{ inputs.version }}
+          target: ${{ github.sha }}
+          draft: true
+          create-release: true
 ```
 
 ### Use the title and notes in your own release step
 
-Leave `create-release` off and read the outputs from a later job:
+Leave `create-release` off and read the outputs in a later step:
 
 ```yaml
-jobs:
-  notes:
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      - id: notes
+        uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 
-  release:
-    needs: notes
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
       - env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.notes.outputs.tag }}
-          TITLE: ${{ needs.notes.outputs.title }}
-          NOTES: ${{ needs.notes.outputs.notes }}
-        run: |
-          printf '%s\n' "$NOTES" > notes.md
-          gh release create "$TAG" --title "$TITLE" --notes-file notes.md
+          TAG: ${{ steps.notes.outputs.tag }}
+          TITLE: ${{ steps.notes.outputs.title }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes-file }}
+        run: gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
 ```
 
-This also works with any release action, e.g. `name: ${{ needs.notes.outputs.title }}` and `body: ${{ needs.notes.outputs.notes }}`.
+This also works with any release action, e.g. `name: ${{ steps.notes.outputs.title }}` and `body_path: ${{ steps.notes.outputs.notes-file }}`.
 
-> Pass the outputs through `env:` as shown rather than writing `${{ needs.notes.outputs.notes }}` directly inside a `run:` script: the notes are model-generated text and should never be pasted into shell code.
+> Pass the outputs through `env:` as shown rather than writing `${{ steps.notes.outputs.notes }}` directly inside a `run:` script: the notes are model-generated text and should never be pasted into shell code.
 
 ### Steer the writing
 
 ```yaml
-    with:
-      instructions: |
-        Audience is non-technical end users. Keep it under 10 bullets.
-        Call out anything that requires a config change in a "Breaking Changes" section.
-      title-template: '{title} ({tag})'
+        with:
+          instructions: |
+            Audience is non-technical end users. Keep it under 10 bullets.
+            Call out anything that requires a config change in a "Breaking Changes" section.
+          title-template: '{title} ({tag})'
 ```
 
 ### Monorepos and multiple tag series
@@ -213,19 +203,35 @@ This also works with any release action, e.g. `name: ${{ needs.notes.outputs.tit
 Use `tag-pattern` so the previous tag is picked from the same series:
 
 ```yaml
-    with:
-      tag-pattern: 'api-v*'
+        with:
+          tag-pattern: 'api-v*'
 ```
 
-or set `previous-tag` explicitly.
+or set `previous-tag` explicitly. If you also keep a moving major tag such as `v1`, use `tag-pattern: 'v*.*.*'` so it isn't picked as the previous release.
+
+### Reusable workflow
+
+If you'd rather call a whole job than add steps, the same logic is available as a reusable workflow. It checks out your repository itself, and takes the key as a secret:
+
+```yaml
+jobs:
+  release:
+    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@v1
+    with:
+      create-release: true
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }} # or: secrets: inherit
+```
+
+It takes the same [inputs](#inputs) (except `openrouter-api-key` and `github-token`) plus `runs-on`, and its outputs are read from `needs.<job>.outputs`. It runs the action from the same commit you call it at, so pinning the workflow pins the action too. It needs github.com: GitHub Enterprise Server doesn't provide the `job.workflow_*` context it relies on, so use the action there.
 
 ## Choosing a model
 
 The default, `openrouter/free`, costs nothing: OpenRouter picks one of its free models for each request. To use a model you choose, set `model` to any [OpenRouter model ID](https://openrouter.ai/models):
 
 ```yaml
-    with:
-      model: anthropic/claude-sonnet-4.5
+        with:
+          model: anthropic/claude-sonnet-4.5
 ```
 
 Paid models are billed to your OpenRouter account and need credits on it.
@@ -233,8 +239,8 @@ Paid models are billed to your OpenRouter account and need credits on it.
 **Fallbacks.** List several models, separated by commas or new lines, and OpenRouter tries them in order when one fails (an error, downtime, rate limiting or no credits left). Ending the list with `openrouter/free` keeps releases going for free if your preferred model is unavailable:
 
 ```yaml
-    with:
-      model: anthropic/claude-sonnet-4.5, openrouter/free
+        with:
+          model: anthropic/claude-sonnet-4.5, openrouter/free
 ```
 
 You're billed for whichever model actually answers; the `model` output says which one it was. To guarantee a release costs nothing, list only `openrouter/free` or models ending in `:free`.
@@ -242,8 +248,8 @@ You're billed for whichever model actually answers; the `model` output says whic
 **Per-repository default without editing the workflow.** Read the model from a repository or organization [variable](https://docs.github.com/actions/learn-github-actions/variables) and fall back to the free router when it isn't set:
 
 ```yaml
-    with:
-      model: ${{ vars.OPENROUTER_MODEL || 'openrouter/free' }}
+        with:
+          model: ${{ vars.OPENROUTER_MODEL || 'openrouter/free' }}
 ```
 
 ```bash
@@ -272,11 +278,12 @@ Marking breaking commits with `!` or `BREAKING CHANGE:` is the most reliable way
 
 ## Inputs
 
-All inputs are optional.
+Only `openrouter-api-key` is required.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `tag` | triggering tag | Tag to generate notes for. Defaults to `github.ref_name` when the caller runs on a tag push or release event; required otherwise. |
+| `openrouter-api-key` | | **Required.** Your OpenRouter API key; pass `${{ secrets.OPENROUTER_API_KEY }}`. |
+| `tag` | triggering tag | Tag to generate notes for. Defaults to `github.ref_name` when the workflow runs on a tag push or release event; required otherwise. |
 | `previous-tag` | auto | Tag to compare against. Defaults to the closest tag reachable from the parent of the release commit. Empty on a first release (the whole history is used). |
 | `target` | `github.sha` | Commit-ish to release when `tag` doesn't exist yet. Ignored if the tag exists. |
 | `tag-pattern` | | Glob for picking the previous tag automatically (`git describe --match`), e.g. `v*`. |
@@ -294,14 +301,12 @@ All inputs are optional.
 | `create-release` | `false` | Create the release, or update its title and notes if it already exists. Needs `contents: write`. |
 | `draft` | `false` | Create the release as a draft (new releases only). |
 | `prerelease` | `false` | Mark the release as a prerelease (new releases only). |
-| `runs-on` | `ubuntu-latest` | Runner label. Needs `git`, `python3` and, for `create-release`, `gh`. |
 | `api-base-url` | `https://openrouter.ai/api/v1` | OpenRouter API base URL. |
+| `github-token` | `github.token` | Token for GitHub's generated notes and for creating the release. |
 
-### Secrets
+The runner needs `bash`, `git`, `python3` and, for `create-release`, `gh`; GitHub's Ubuntu and macOS runners have them all.
 
-| Secret | Required | Description |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | **yes** | Your OpenRouter API key, stored as a secret in the calling repository. |
+The [reusable workflow](#reusable-workflow) takes the API key as the `OPENROUTER_API_KEY` secret instead of an input, has no `github-token` input, and adds `runs-on` (runner label, default `ubuntu-latest`).
 
 ## Outputs
 
@@ -309,6 +314,7 @@ All inputs are optional.
 | --- | --- |
 | `title` | Release title (after `title-template`). |
 | `notes` | Release notes in Markdown. |
+| `notes-file` | Path to a file with the release notes (action only). |
 | `tag` | Tag the notes were generated for. |
 | `previous-tag` | Tag the changes were compared against (empty on a first release). |
 | `model` | The model that actually answered, e.g. `google/gemma-4-31b-it:free` when the free router picked it. Empty when the fallback was used. |
@@ -317,9 +323,9 @@ All inputs are optional.
 
 ## Permissions
 
-The reusable workflow doesn't declare permissions; it runs with what the **caller** grants its `GITHUB_TOKEN`.
+The action uses the workflow's `GITHUB_TOKEN` (or `github-token`), so it can do what your workflow's `permissions:` grant. The reusable workflow doesn't declare permissions either; it runs with what the caller grants.
 
-| You want | Caller needs |
+| You want | Workflow needs |
 | --- | --- |
 | Generate text only, from git history | `contents: read` |
 | Include merged PRs / contributors as context (`use-github-notes`) | `contents: write` |
@@ -327,8 +333,8 @@ The reusable workflow doesn't declare permissions; it runs with what the **calle
 
 ## How it works
 
-1. **Checks** that `OPENROUTER_API_KEY` is set and stops with instructions if not.
-2. **Checks out** the calling repository with full history and tags.
+1. **Checks** that the OpenRouter key is set and stops with instructions if not.
+2. **Uses your checkout** of the repository, fetching the full history and tags if it is shallow. (The reusable workflow checks out your repository with full history itself.)
 3. **Works out the range**: the release tag (or `target` if the tag isn't created yet) and the previous tag.
 4. **Collects context**: commits flagged as breaking, commit subjects and bodies (merges excluded, up to `max-commits`), a diffstat of changed files, and GitHub's generated notes when permitted, trimmed to `max-input-chars` (the flagged breaking commits are always sent in full).
 5. **Calls OpenRouter** with the `model` input (`openrouter/free` by default, which routes the request to a randomly chosen free model that supports the features asked for), plus any fallback models you listed. The model is asked for JSON with a `title` and Markdown `notes`: Breaking Changes first, then a summary, then New Features, Bug Fixes, Performance, Documentation and Maintenance. It is told not to invent changes. The answer is parsed defensively (code fences and `<think>` blocks are stripped) and validated.
@@ -357,13 +363,14 @@ Commit messages, changed file names and PR titles from the release range are sen
 
 | Symptom | Fix |
 | --- | --- |
-| `OPENROUTER_API_KEY is not set` | Add the secret to this repository and pass it under `secrets:` (or `secrets: inherit`). Secrets aren't available to workflows triggered from forks. |
+| `OpenRouter API key is not set` / `OPENROUTER_API_KEY is not set` | Add the secret to this repository and pass it as `openrouter-api-key` (action) or under `secrets:` (reusable workflow). Secrets aren't available to workflows triggered from forks. |
+| `No git repository here` | Add `actions/checkout` with `fetch-depth: 0` before the action. |
 | `OpenRouter rejected OPENROUTER_API_KEY (HTTP 401)` | The key is wrong or revoked; create a new one and update the secret. |
 | Warnings with HTTP `404` "No endpoints found matching your data policy" | Your OpenRouter privacy settings exclude every free provider. Allow free endpoints in [privacy settings](https://openrouter.ai/settings/privacy). |
 | Warning with HTTP `402` | If it says the in-flight spending budget is temporarily full, the workflow waits for OpenRouter's `Retry-After` and retries on its own. Otherwise it means insufficient credits (the warning includes OpenRouter's hint); the workflow stops retrying and uses the fallback notes. With a paid model, add credits or add `openrouter/free` as a fallback in `model`. If you're already on free models, your OpenRouter balance is negative, which blocks free models too: add credits. |
 | Warnings with HTTP `429` | Free-tier rate limit. Raise `retries`, or wait; the fallback still publishes the release. |
-| `No tag to release` | The caller didn't run on a tag. Pass `tag:`. |
-| `Resource not accessible by integration` when creating the release | The caller needs `permissions: contents: write`. |
+| `No tag to release` | The workflow didn't run on a tag. Pass `tag:`. |
+| `Resource not accessible by integration` when creating the release | The workflow needs `permissions: contents: write`. |
 | Notes compare against the wrong tag | Set `tag-pattern` or `previous-tag`. |
 | A breaking change isn't listed, or a warning says a flagged commit isn't mentioned | Mark breaking commits with `!` (e.g. `feat!: ...`) or a `BREAKING CHANGE:` footer so they're handed to the model as mandatory. If a free model still leaves one out, re-run the job or set `model` to a more capable model. |
 | `Release notes exceeded GitHub's 125,000-character limit` | The notes were cut at a line boundary to fit GitHub's release body limit. Breaking changes come first, so they survive unless the breaking-change list alone is that long. Lower `max-commits` or narrow the range with `previous-tag`. |
@@ -371,23 +378,29 @@ Commit messages, changed file names and PR titles from the release range are sen
 
 ## Pinning a version
 
-`@main` always runs the latest version of this workflow. To control updates, pin a release tag or, most strictly, a commit SHA:
+`@v1` follows the latest `v1.x.y` release. To control updates, pin an exact release or, most strictly, a commit SHA:
 
 ```yaml
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@v1.0.0
+      - uses: pacnpal/free-ai-release-notes@v1.2.0
 ```
 
 ```yaml
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@<commit-sha>
+      - uses: pacnpal/free-ai-release-notes@<commit-sha>
 ```
 
-For private or internal repositories, the repository hosting this workflow must be accessible to the caller (public, or shared under **Settings → Actions → General → Access**).
+The same refs work for the reusable workflow (`pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@v1`). `@main` runs unreleased changes.
+
+For private or internal repositories, this repository must be accessible to the caller (public, or shared under **Settings → Actions → General → Access**). If you host the reusable workflow in a private or internal repository, also pass a token that can read it (for example a fine-grained token with `contents: read` on it) as the `WORKFLOW_REPO_TOKEN` secret: the workflow checks that repository out to run the action, and the caller's `github.token` can't read it. The action itself needs no token for this.
 
 ## Developing this repository
 
-- [`.github/workflows/generate-release-notes.yml`](.github/workflows/generate-release-notes.yml) is the reusable workflow. All logic lives inline, so callers don't need to check out this repository.
-- [`.github/workflows/release.yml`](.github/workflows/release.yml) releases this repository with its own workflow on every `v*` tag (needs the `OPENROUTER_API_KEY` secret here too).
+- [`action.yml`](action.yml) is the action. It runs [`src/generate_notes.py`](src/generate_notes.py), which holds all the logic, then creates or updates the release with `gh`.
+- [`.github/workflows/generate-release-notes.yml`](.github/workflows/generate-release-notes.yml) is the reusable workflow: it checks out the caller's repository and this one (at the commit it was called at) and runs the action.
+- [`.github/workflows/test.yml`](.github/workflows/test.yml) runs the action, from both a full and a shallow checkout, and the reusable workflow against this repository on every push and pull request, without creating a release (needs the `OPENROUTER_API_KEY` secret here).
+- [`.github/workflows/release.yml`](.github/workflows/release.yml) releases this repository with its own action on every `vX.Y.Z` tag and moves the major tag (`v1`) to it.
 - [`.github/workflows/lint.yml`](.github/workflows/lint.yml) runs [actionlint](https://github.com/rhysd/actionlint) over the workflows and examples.
+
+To release: push a `vX.Y.Z` tag. To show a release on the GitHub Marketplace, edit it on GitHub and tick **Publish this Action to the GitHub Marketplace** (the first time, you'll be asked to accept the Marketplace Developer Agreement and pick a category).
 
 ## License
 

@@ -18,12 +18,17 @@ permissions:
 
 jobs:
   release:
-    uses: pacnpal/free-ai-release-notes/.github/workflows/generate-release-notes.yml@main
-    with:
-      tag: ${{ inputs.version }}
-      target: ${{ github.sha }}
-      prerelease: ${{ inputs.prerelease }}
-      draft: true # review before publishing
-      create-release: true
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          tag: ${{ inputs.version }}
+          target: ${{ github.sha }}
+          prerelease: ${{ inputs.prerelease }}
+          draft: true # review before publishing
+          create-release: true
