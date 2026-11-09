@@ -470,14 +470,18 @@ jobs:
 
               If none exists but commits flagged breaking changes, add one.
               """
-              # [heading level, is breaking, lines, index of first sub-heading, index of last own list line]
+              # [heading level, is breaking, lines, index of first sub-heading,
+              #  index of the last line of the section's own list (items, continuations and their code blocks)]
               blocks = [[0, False, [], None, None]]
               fence = None  # (character, length) of the open code fence
               last_markdown_level = 0  # level of the most recent "#" heading
+              item_open = False  # inside a list item of the current block, before any sub-heading
+              fence_in_item = False  # the open code fence belongs to that list item
               for line in markdown.splitlines():
-                  run = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-                  marker = run.group(1) if run else ""
+                  run = re.match(r"^ {0,3}(`{3,}|~{3,})|^\s+(`{3,}|~{3,})", line)
+                  marker = (run.group(1) or run.group(2)) if run else ""
                   in_fence = fence is not None or bool(marker)
+                  opening = fence is None and bool(marker)
                   if fence is None and marker:
                       fence = (marker[0], len(marker))
                   elif fence and marker[:1] == fence[0] and len(marker) >= fence[1] and line.strip() == marker:
@@ -499,12 +503,27 @@ jobs:
                   current = blocks[-1]
                   if heading and not (current[1] and level > current[0]):
                       blocks.append([level, bool(BREAKING_HEADING.search(heading.group(2))), [line], None, None])
+                      item_open = fence_in_item = False
                   else:
                       if heading and current[3] is None:
                           current[3] = len(current[2])  # a sub-heading kept inside a breaking section
-                      elif (current[3] is None and not in_fence and line.strip()
-                            and LIST_LINE.match(line)):
-                          current[4] = len(current[2])  # a list item (or its continuation) before any sub-heading
+                          item_open = False
+                      elif current[3] is None:
+                          if opening:
+                              # A code block right after a list item (e.g. a migration example) belongs to it.
+                              fence_in_item = item_open
+                              if fence_in_item:
+                                  current[4] = len(current[2])
+                          elif in_fence:
+                              if fence_in_item:
+                                  current[4] = len(current[2])
+                          elif not line.strip():
+                              pass  # blank lines don't end a list item
+                          elif LIST_LINE.match(line):
+                              item_open = True
+                              current[4] = len(current[2])
+                          else:
+                              item_open = False  # unindented text after the list ends it
                       current[2].append(line)
 
               def join(selected):
@@ -515,12 +534,20 @@ jobs:
               rest = join(b for b in blocks if not b[1])
               if breaking:
                   section = join(breaking)
-                  # Match by hash; fall back to the subject only when no other flagged commit shares it.
+                  # Match by hash. Fall back to the subject only when it is unambiguous: no other flagged
+                  # subject equals or contains it, and it appears as a whole phrase (so "remove --force"
+                  # is not found inside "remove --force-all").
                   subjects = [summary.lower() for _, summary, _ in breaking_changes]
+
+                  def subject_present(summary):
+                      lowered = summary.lower()
+                      if sum(lowered in other for other in subjects) != 1:
+                          return False
+                      return re.search(r"(?<![\w-])" + re.escape(lowered) + r"(?![\w-])", section.lower()) is not None
+
                   missing = [
                       item for sha, summary, item in breaking_changes
-                      if sha not in section
-                      and not (subjects.count(summary.lower()) == 1 and summary.lower() in section.lower())
+                      if sha not in section and not subject_present(summary)
                   ]
                   if missing:
                       # Insert after the first breaking section's own bullets, before any sub-heading
